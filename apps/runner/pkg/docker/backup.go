@@ -6,6 +6,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/daytonaio/runner/pkg/api/dto"
@@ -22,6 +23,9 @@ type backupContext struct {
 var backup_context_map = cmap.New[backupContext]()
 
 func (d *DockerClient) CreateBackup(ctx context.Context, containerId string, backupDto dto.CreateBackupDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox backups require the protected checkpoint path")
+	}
 	// Cancel a backup if it's already in progress
 	backup_context, ok := backup_context_map.Get(containerId)
 	if ok {
@@ -34,6 +38,9 @@ func (d *DockerClient) CreateBackup(ctx context.Context, containerId string, bac
 }
 
 func (d *DockerClient) CreateBackupAsync(ctx context.Context, containerId string, backupDto dto.CreateBackupDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox backups require the protected checkpoint path")
+	}
 	// Cancel a backup if it's already in progress
 	backup_context, ok := backup_context_map.Get(containerId)
 	if ok {
@@ -58,6 +65,9 @@ func (d *DockerClient) CreateBackupAsync(ctx context.Context, containerId string
 }
 
 func (d *DockerClient) createBackup(containerId string, backupDto dto.CreateBackupDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox backups require the protected checkpoint path")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.backupTimeoutMin)*time.Minute)
 
 	defer func() {

@@ -14,6 +14,9 @@ import (
 )
 
 func (d *DockerClient) BuildSnapshot(ctx context.Context, req dto.BuildSnapshotRequestDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner accepts only its pre-pinned image")
+	}
 	buildCtx, cancel := context.WithTimeout(ctx, time.Duration(d.buildTimeoutMin)*time.Minute)
 	defer cancel()
 

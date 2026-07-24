@@ -141,6 +141,11 @@ func run() int {
 
 	backupInfoCache := cache.NewBackupInfoCache(ctx, cfg.BackupInfoCacheRetention)
 
+	if cfg.TerminalXHardened && sshgateway.IsSSHGatewayEnabled() {
+		logger.Error("TerminalX hardened runner does not permit the SSH gateway")
+		return 2
+	}
+
 	dockerClient, err := docker.NewDockerClient(ctx, docker.DockerClientConfig{
 		ApiClient:                    cli,
 		BackupInfoCache:              backupInfoCache,
@@ -169,6 +174,14 @@ func run() int {
 		InterSandboxNetworkEnabled:   cfg.InterSandboxNetworkEnabled,
 		GpuEnabled:                   cfg.GpuEnabled,
 		MountKvmToAndroidSandbox:     cfg.MountKvmToAndroidSandbox,
+		ContainerNetwork:             cfg.ContainerNetwork,
+		ContainerRuntime:             cfg.ContainerRuntime,
+		TerminalXHardened:            cfg.TerminalXHardened,
+		TerminalXSandboxImageID:      cfg.TerminalXSandboxImageID,
+		TerminalXSandboxSnapshotRef:  cfg.TerminalXSandboxSnapshotRef,
+		TerminalXDockerServerVersion: cfg.TerminalXDockerServerVersion,
+		TerminalXContainerdCommit:    cfg.TerminalXContainerdCommit,
+		TerminalXRuncCommit:          cfg.TerminalXRuncCommit,
 	})
 	if err != nil {
 		logger.Error("Error creating Docker client wrapper", "error", err)
@@ -177,6 +190,8 @@ func run() int {
 
 	// Start Docker events monitor
 	monitorOpts := docker.MonitorOptions{
+		TerminalXHardened: cfg.TerminalXHardened,
+		TerminalXClient:   dockerClient,
 		OnDestroyEvent: func(ctx context.Context) {
 			dockerClient.CleanupOrphanedVolumeMounts(ctx)
 		},

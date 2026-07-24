@@ -67,6 +67,16 @@ type Config struct {
 	BuildEngine                        string        `envconfig:"BUILD_ENGINE" default:"buildkit" validate:"oneof=buildkit legacy"`
 	ForceSnapshotRemoval               bool          `envconfig:"FORCE_SNAPSHOT_REMOVAL" default:"true"`
 	MountKvmToAndroidSandbox           bool          `envconfig:"MOUNT_KVM_TO_ANDROID_SANDBOX" default:"false"`
+	// TerminalXHardened enables the fail-closed runner profile used by the
+	// TerminalX hosted Runtime.  It is deliberately opt-in so an operator must
+	// acknowledge that this runner accepts only the pinned TerminalX image and
+	// its much narrower Sandbox contract.
+	TerminalXHardened            bool   `envconfig:"TERMINALX_HARDENED" default:"false"`
+	TerminalXSandboxImageID      string `envconfig:"TERMINALX_SANDBOX_IMAGE_ID"`
+	TerminalXSandboxSnapshotRef  string `envconfig:"TERMINALX_SANDBOX_SNAPSHOT_REF"`
+	TerminalXDockerServerVersion string `envconfig:"TERMINALX_DOCKER_SERVER_VERSION"`
+	TerminalXContainerdCommit    string `envconfig:"TERMINALX_CONTAINERD_COMMIT"`
+	TerminalXRuncCommit          string `envconfig:"TERMINALX_RUNC_COMMIT"`
 }
 
 var DEFAULT_API_PORT int = 8080

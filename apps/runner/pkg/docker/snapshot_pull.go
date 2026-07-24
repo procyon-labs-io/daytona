@@ -14,6 +14,9 @@ import (
 )
 
 func (d *DockerClient) PullSnapshot(ctx context.Context, req dto.PullSnapshotRequestDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner accepts only its preloaded pinned image")
+	}
 	// Pull the image using the pull registry (or none for public images)
 	_, err := d.PullImage(ctx, req.Snapshot, req.Registry, nil)
 	if err != nil {

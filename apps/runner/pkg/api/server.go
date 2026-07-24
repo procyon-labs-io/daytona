@@ -97,6 +97,9 @@ func (a *ApiServer) Start(ctx context.Context) error {
 
 	a.router = gin.New()
 	a.router.Use(common_errors.Recovery())
+	// This must precede request logging and telemetry: the legacy Start token is
+	// sensitive even though hardened TerminalX sandboxes never consume it.
+	a.router.Use(middlewares.RedactStartTokenQuery())
 
 	gin.SetMode(gin.ReleaseMode)
 	if config.GetEnvironment() == "development" {

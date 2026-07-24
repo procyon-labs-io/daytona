@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/daytonaio/runner/pkg/api/dto"
+	"github.com/daytonaio/runner/pkg/api/middlewares"
 	"github.com/daytonaio/runner/pkg/common"
 	"github.com/daytonaio/runner/pkg/models/enums"
 	"github.com/daytonaio/runner/pkg/runner"
@@ -351,7 +352,7 @@ func Start(ctx *gin.Context) {
 	}
 
 	var authToken *string
-	tokenQuery := ctx.Query("token")
+	tokenQuery := middlewares.StartToken(ctx)
 	if tokenQuery != "" {
 		authToken = &tokenQuery
 	}

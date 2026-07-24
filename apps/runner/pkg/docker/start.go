@@ -30,6 +30,17 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	if err != nil {
 		return nil, "", err
 	}
+	if d.terminalXHardened {
+		if metadata != nil && metadata["volumes"] != "" {
+			return nil, "", errors.New("terminalx hardened sandbox does not permit shared volumes")
+		}
+		// The container receives its bridge address at create time.  Install the
+		// fail-closed chain before either starting it or declaring an externally
+		// started instance ready.
+		if err := d.enforceTerminalXNetworkPolicy(ctx, c); err != nil {
+			return nil, "", err
+		}
+	}
 
 	if c.State.Running {
 		containerIP := GetContainerIpAddress(ctx, c)
@@ -98,7 +109,7 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 		return runningContainer, "", nil
 	}
 
-	if !slices.Equal(c.Config.Entrypoint, strslice.StrSlice{common.DAEMON_PATH}) {
+	if !d.terminalXHardened && !slices.Equal(c.Config.Entrypoint, strslice.StrSlice{common.DAEMON_PATH}) {
 		processesCtx := context.Background()
 		go func() {
 			if err := d.startDaytonaDaemon(processesCtx, containerId, c.Config.WorkingDir); err != nil {

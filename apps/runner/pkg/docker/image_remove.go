@@ -5,12 +5,16 @@ package docker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/image"
 )
 
 func (d *DockerClient) RemoveImage(ctx context.Context, imageName string, force bool) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner cannot remove its pinned image")
+	}
 	_, err := d.apiClient.ImageRemove(ctx, imageName, image.RemoveOptions{
 		Force:         force,
 		PruneChildren: true,

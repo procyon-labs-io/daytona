@@ -47,6 +47,14 @@ type DockerClientConfig struct {
 	InterSandboxNetworkEnabled   bool
 	GpuEnabled                   bool
 	MountKvmToAndroidSandbox     bool
+	ContainerNetwork             string
+	ContainerRuntime             string
+	TerminalXHardened            bool
+	TerminalXSandboxImageID      string
+	TerminalXSandboxSnapshotRef  string
+	TerminalXDockerServerVersion string
+	TerminalXContainerdCommit    string
+	TerminalXRuncCommit          string
 }
 
 func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerClient, error) {
@@ -95,12 +103,23 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 	}
 
 	if !config.InterSandboxNetworkEnabled {
-		if _, err := config.ApiClient.NetworkInspect(ctx, RUNNER_BRIDGE_NETWORK_NAME, network.InspectOptions{}); err != nil {
+		if inspected, err := config.ApiClient.NetworkInspect(ctx, RUNNER_BRIDGE_NETWORK_NAME, network.InspectOptions{}); err != nil {
+			enableIPv4 := true
+			enableIPv6 := false
+			networkLabels := map[string]string{}
+			if config.TerminalXHardened {
+				networkLabels[terminalXNetworkProfileLabel] = terminalXHardenedProfileVersion
+			}
 			_, err := config.ApiClient.NetworkCreate(ctx, RUNNER_BRIDGE_NETWORK_NAME, network.CreateOptions{
-				Driver: "bridge",
+				Driver:     "bridge",
+				Scope:      "local",
+				EnableIPv4: &enableIPv4,
+				EnableIPv6: &enableIPv6,
+				Internal:   config.TerminalXHardened,
 				Options: map[string]string{
 					"com.docker.network.bridge.enable_icc": "false",
 				},
+				Labels: networkLabels,
 				IPAM: &network.IPAM{
 					Driver: "default",
 					Config: []network.IPAMConfig{
@@ -112,6 +131,19 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 			if err != nil {
 				return nil, fmt.Errorf("failed to create %s network: %w", RUNNER_BRIDGE_NETWORK_NAME, err)
 			}
+			if config.TerminalXHardened {
+				inspected, err = config.ApiClient.NetworkInspect(ctx, RUNNER_BRIDGE_NETWORK_NAME, network.InspectOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("failed to inspect %s network: %w", RUNNER_BRIDGE_NETWORK_NAME, err)
+				}
+				if err := validateTerminalXRunnerNetwork(inspected); err != nil {
+					return nil, err
+				}
+			}
+		} else if config.TerminalXHardened {
+			if err := validateTerminalXRunnerNetwork(inspected); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -121,6 +153,41 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 		if driver[0] == "Backing Filesystem" {
 			filesystem = driver[1]
 			break
+		}
+	}
+
+	if config.TerminalXHardened {
+		if err := validateTerminalXRunnerRequirements(terminalXRunnerRequirements{
+			imageID:                     config.TerminalXSandboxImageID,
+			snapshotRef:                 config.TerminalXSandboxSnapshotRef,
+			resourceLimitsDisabled:      config.ResourceLimitsDisabled,
+			useSnapshotEntrypoint:       config.UseSnapshotEntrypoint,
+			interSandboxNetworkEnabled:  config.InterSandboxNetworkEnabled,
+			containerNetwork:            config.ContainerNetwork,
+			containerRuntime:            config.ContainerRuntime,
+			defaultRuntime:              info.DefaultRuntime,
+			cgroupVersion:               info.CgroupVersion,
+			gpuEnabled:                  config.GpuEnabled,
+			mountKvm:                    config.MountKvmToAndroidSandbox,
+			initializeDaemonTelemetry:   config.InitializeDaemonTelemetry,
+			networkEnforcementAvailable: config.NetRulesManager != nil,
+			storageDriver:               info.Driver,
+			backingFilesystem:           filesystem,
+			securityOptions:             info.SecurityOptions,
+			expectedDockerServerVersion: config.TerminalXDockerServerVersion,
+			actualDockerServerVersion:   info.ServerVersion,
+			expectedContainerdCommit:    config.TerminalXContainerdCommit,
+			actualContainerdCommit:      info.ContainerdCommit.ID,
+			expectedRuncCommit:          config.TerminalXRuncCommit,
+			actualRuncCommit:            info.RuncCommit.ID,
+			memoryLimitAvailable:        info.MemoryLimit,
+			swapLimitAvailable:          info.SwapLimit,
+			cpuQuotaAvailable:           info.CPUCfsPeriod && info.CPUCfsQuota,
+			pidsLimitAvailable:          info.PidsLimit,
+			oomKillAvailable:            info.OomKillDisable,
+			liveRestoreEnabled:          info.LiveRestoreEnabled,
+		}); err != nil {
+			return nil, err
 		}
 	}
 
@@ -135,7 +202,7 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 		}
 	}
 
-	return &DockerClient{
+	dockerClient := &DockerClient{
 		apiClient:                    config.ApiClient,
 		backupInfoCache:              config.BackupInfoCache,
 		pullTracker:                  &common.Tracker[string]{},
@@ -169,7 +236,16 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 		gpuAllocator:                 newGpuAllocator(gpuCount),
 		filesystem:                   filesystem,
 		mountKvmToAndroidSandbox:     config.MountKvmToAndroidSandbox,
-	}, nil
+		terminalXHardened:            config.TerminalXHardened,
+		terminalXSandboxImageID:      config.TerminalXSandboxImageID,
+		terminalXSandboxSnapshotRef:  config.TerminalXSandboxSnapshotRef,
+	}
+	if dockerClient.terminalXHardened {
+		if err := dockerClient.reconcileTerminalXContainers(ctx); err != nil {
+			return nil, dockerClient.quarantineTerminalXContainers(ctx, err)
+		}
+	}
+	return dockerClient, nil
 }
 
 // GpuCount returns the number of NVIDIA GPUs detected on the host at startup.
@@ -228,4 +304,7 @@ type DockerClient struct {
 	gpuType                      string
 	gpuAllocator                 *gpuAllocator
 	mountKvmToAndroidSandbox     bool
+	terminalXHardened            bool
+	terminalXSandboxImageID      string
+	terminalXSandboxSnapshotRef  string
 }

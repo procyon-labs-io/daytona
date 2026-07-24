@@ -25,6 +25,14 @@ import (
 
 func (d *DockerClient) Create(ctx context.Context, sandboxDto dto.CreateSandboxDTO) (string, string, error) {
 	defer timer.Timer()()
+	if d.terminalXHardened {
+		if err := validateTerminalXCreateRequest(sandboxDto); err != nil {
+			return "", "", err
+		}
+		if err := validateTerminalXSnapshotReference(sandboxDto, d.terminalXSandboxSnapshotRef); err != nil {
+			return "", "", err
+		}
+	}
 
 	startTime := time.Now()
 	defer func() {
@@ -72,6 +80,11 @@ func (d *DockerClient) Create(ctx context.Context, sandboxDto dto.CreateSandboxD
 		c, err := d.ContainerInspect(ctx, sandboxDto.Id)
 		if err != nil {
 			return "", "", err
+		}
+		if d.terminalXHardened {
+			if err := d.enforceTerminalXNetworkPolicy(ctx, c); err != nil {
+				return "", "", err
+			}
 		}
 
 		// Re-assert link-network wiring on retries so idempotent creates still end
@@ -234,6 +247,11 @@ func (d *DockerClient) Create(ctx context.Context, sandboxDto dto.CreateSandboxD
 	runningContainer, daemonVersion, err := d.Start(ctx, sandboxDto.Id, sandboxDto.AuthToken, sandboxDto.Metadata)
 	if err != nil {
 		return "", "", err
+	}
+	if d.terminalXHardened {
+		// Start synchronously installed the exact default-deny policy.  Never
+		// fall through to the legacy asynchronous policy path.
+		return c.ID, daemonVersion, nil
 	}
 
 	containerShortId := runningContainer.ID[:12]

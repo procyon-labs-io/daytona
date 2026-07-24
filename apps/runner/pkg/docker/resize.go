@@ -18,6 +18,9 @@ import (
 )
 
 func (d *DockerClient) Resize(ctx context.Context, sandboxId string, sandboxDto dto.ResizeSandboxDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox resources are immutable")
+	}
 	// Handle disk resize (requires container recreation)
 	// Value of 0 means "don't change" (minimum valid value is 1)
 	if sandboxDto.Disk > 0 {
@@ -69,6 +72,9 @@ func (d *DockerClient) Resize(ctx context.Context, sandboxId string, sandboxDto 
 // Used by both storage recovery and disk resize.
 // Container must be stopped before calling this function.
 func (d *DockerClient) ContainerDiskResize(ctx context.Context, sandboxId string, newStorageGB float64, cpu int64, memory int64, operationName string, registry *dto.RegistryDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox resources are immutable")
+	}
 	if d.filesystem != "xfs" {
 		return fmt.Errorf("%s requires XFS filesystem, current filesystem: %s", operationName, d.filesystem)
 	}

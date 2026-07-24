@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/daytonaio/common-go/pkg/log"
@@ -15,6 +16,9 @@ import (
 )
 
 func (d *DockerClient) PushImage(ctx context.Context, imageName string, reg *dto.RegistryDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner does not push its pinned image")
+	}
 	d.logger.InfoContext(ctx, "Pushing image", "imageName", imageName)
 
 	responseBody, err := d.apiClient.ImagePush(ctx, imageName, image.PushOptions{

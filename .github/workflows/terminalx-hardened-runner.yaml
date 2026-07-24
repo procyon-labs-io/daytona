@@ -1,0 +1,54 @@
+name: TerminalX hardened runner
+
+on:
+  pull_request:
+    paths:
+      - 'apps/runner/**'
+      - 'guides/terminalx-hardened-runner.md'
+      - '.github/workflows/terminalx-hardened-runner.yaml'
+  push:
+    branches:
+      - 'main'
+      - 'terminalx/**'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable Daytona base ancestry
+        run: git merge-base --is-ancestor b5a5d9e78d76c8bcf351f2049620250e0f34eea4 HEAD
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: apps/runner/go.mod
+          cache-dependency-path: |
+            apps/runner/go.sum
+            go.work.sum
+      - name: Verify formatting
+        working-directory: apps/runner
+        run: test -z "$(gofmt -l cmd/runner pkg/docker pkg/netrules)"
+      - name: Test complete runner module
+        working-directory: apps/runner
+        run: go test ./...
+      - name: Run static analysis
+        working-directory: apps/runner
+        run: go vet ./...
+      - name: Run race-enabled hardened boundary tests
+        working-directory: apps/runner
+        run: go test -race ./pkg/api/middlewares ./pkg/docker ./pkg/netrules
+      - name: Verify reproducible runner binary
+        working-directory: apps/runner
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-runner-a" ./cmd/runner
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-runner-b" ./cmd/runner
+          cmp "$RUNNER_TEMP/daytona-runner-a" "$RUNNER_TEMP/daytona-runner-b"
+          sha256sum "$RUNNER_TEMP/daytona-runner-a"

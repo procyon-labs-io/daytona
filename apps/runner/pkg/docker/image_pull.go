@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 
@@ -21,6 +22,19 @@ import (
 
 func (d *DockerClient) PullImage(ctx context.Context, imageName string, reg *dto.RegistryDTO, sandboxId *string) (*image.InspectResponse, error) {
 	defer timer.Timer()()
+	if d.terminalXHardened {
+		if imageName != d.terminalXSandboxSnapshotRef || sandboxId == nil {
+			return nil, fmt.Errorf("terminalx hardened runner accepts only its preloaded pinned image")
+		}
+		inspected, err := d.apiClient.ImageInspect(ctx, d.terminalXSandboxSnapshotRef)
+		if err != nil {
+			return nil, fmt.Errorf("terminalx hardened sandbox image is not preloaded: %w", err)
+		}
+		if err := validateTerminalXImage(&inspected, d.terminalXSandboxImageID); err != nil {
+			return nil, err
+		}
+		return &inspected, nil
+	}
 
 	tag := "latest"
 	lastColonIndex := strings.LastIndex(imageName, ":")
