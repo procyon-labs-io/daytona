@@ -19,7 +19,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -39,7 +39,8 @@ jobs:
         working-directory: apps/runner
         run: >-
           test -z "$(gofmt -l
-          cmd/runner pkg/api pkg/docker pkg/netrules pkg/terminalxdocker pkg/terminalxlog)"
+          cmd/runner cmd/terminalx-artifact-manifest pkg/api pkg/docker pkg/netrules
+          pkg/terminalxartifact pkg/terminalxdocker pkg/terminalxidentity pkg/terminalxlog)"
       - name: Test complete runner module
         working-directory: apps/runner
         run: go test ./...
@@ -56,15 +57,113 @@ jobs:
           ./pkg/api/middlewares
           ./pkg/docker
           ./pkg/netrules
+          ./pkg/terminalxartifact
           ./pkg/terminalxdocker
+          ./pkg/terminalxidentity
           ./pkg/terminalxlog
       - name: Verify reproducible runner binary
         working-directory: apps/runner
         run: |
-          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-runner-a" ./cmd/runner
-          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-runner-b" ./cmd/runner
-          cmp "$RUNNER_TEMP/daytona-runner-a" "$RUNNER_TEMP/daytona-runner-b"
-          sha256sum "$RUNNER_TEMP/daytona-runner-a"
+          umask 022
+          mkdir -p "$RUNNER_TEMP/terminalx-hardened-artifacts" "$RUNNER_TEMP/terminalx-reproducible"
+          GOCACHE="$RUNNER_TEMP/terminalx-go-cache-runner-a" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" ./cmd/runner
+          GOCACHE="$RUNNER_TEMP/terminalx-go-cache-runner-b" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-reproducible/daytona-runner-linux-amd64" ./cmd/runner
+          cmp \
+            "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" \
+            "$RUNNER_TEMP/terminalx-reproducible/daytona-runner-linux-amd64"
+      - name: Build reproducible daemon and exact runtime artifact manifest
+        run: |
+          umask 022
+          GOCACHE="$RUNNER_TEMP/terminalx-go-cache-daemon-a" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" ./apps/daemon/cmd/daemon
+          GOCACHE="$RUNNER_TEMP/terminalx-go-cache-daemon-b" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-reproducible/daytona-daemon-linux-amd64" ./apps/daemon/cmd/daemon
+          cmp \
+            "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" \
+            "$RUNNER_TEMP/terminalx-reproducible/daytona-daemon-linux-amd64"
+          go run ./apps/runner/cmd/terminalx-artifact-manifest \
+            -runner "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" \
+            -daemon "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" \
+            -expected-source-commit "$GITHUB_SHA" \
+            > "$RUNNER_TEMP/terminalx-hardened-artifacts/terminalx-daytona-runtime-artifacts.json"
+          sha256sum "$RUNNER_TEMP"/terminalx-hardened-artifacts/* | tee -a "$GITHUB_STEP_SUMMARY"
+
+  release-runtime-artifacts:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - verify
+      - verify-api-binding
+      - verify-private-daemon
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out exact reviewed main revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable Daytona base ancestry
+        run: git merge-base --is-ancestor b5a5d9e78d76c8bcf351f2049620250e0f34eea4 HEAD
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: apps/runner/go.mod
+          cache-dependency-path: |
+            apps/runner/go.sum
+            apps/daemon/go.sum
+            go.work.sum
+      - name: Independently build exact runtime artifacts
+        run: |
+          umask 022
+          mkdir -p "$RUNNER_TEMP/terminalx-hardened-artifacts" "$RUNNER_TEMP/terminalx-reproducible"
+          (
+            cd apps/runner
+            GOCACHE="$RUNNER_TEMP/terminalx-release-cache-runner-a" \
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+              -o "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" ./cmd/runner
+            GOCACHE="$RUNNER_TEMP/terminalx-release-cache-runner-b" \
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+              -o "$RUNNER_TEMP/terminalx-reproducible/daytona-runner-linux-amd64" ./cmd/runner
+          )
+          GOCACHE="$RUNNER_TEMP/terminalx-release-cache-daemon-a" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" ./apps/daemon/cmd/daemon
+          GOCACHE="$RUNNER_TEMP/terminalx-release-cache-daemon-b" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath \
+            -o "$RUNNER_TEMP/terminalx-reproducible/daytona-daemon-linux-amd64" ./apps/daemon/cmd/daemon
+          cmp \
+            "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" \
+            "$RUNNER_TEMP/terminalx-reproducible/daytona-runner-linux-amd64"
+          cmp \
+            "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" \
+            "$RUNNER_TEMP/terminalx-reproducible/daytona-daemon-linux-amd64"
+          go run ./apps/runner/cmd/terminalx-artifact-manifest \
+            -runner "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-runner-linux-amd64" \
+            -daemon "$RUNNER_TEMP/terminalx-hardened-artifacts/daytona-daemon-linux-amd64" \
+            -expected-source-commit "$GITHUB_SHA" \
+            > "$RUNNER_TEMP/terminalx-hardened-artifacts/terminalx-daytona-runtime-artifacts.json"
+          sha256sum "$RUNNER_TEMP"/terminalx-hardened-artifacts/* | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload exact hardened runtime artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: terminalx-daytona-runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/terminalx-hardened-artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attest exact hardened runtime artifacts
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ runner.temp }}/terminalx-hardened-artifacts/*
 
   verify-api-binding:
     runs-on: ubuntu-24.04
@@ -133,7 +232,9 @@ jobs:
           pkg/toolbox/process/pty)"
       - name: Test complete daemon module
         working-directory: apps/daemon
-        run: go test ./...
+        run: |
+          umask 022
+          go test ./...
       - name: Run static analysis
         working-directory: apps/daemon
         run: go vet ./...
@@ -143,7 +244,10 @@ jobs:
       - name: Verify reproducible daemon binary
         working-directory: apps/daemon
         run: |
-          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-daemon-a" ./cmd/daemon
-          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/daytona-daemon-b" ./cmd/daemon
+          umask 022
+          GOCACHE="$RUNNER_TEMP/terminalx-private-daemon-cache-a" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath -o "$RUNNER_TEMP/daytona-daemon-a" ./cmd/daemon
+          GOCACHE="$RUNNER_TEMP/terminalx-private-daemon-cache-b" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=true -trimpath -o "$RUNNER_TEMP/daytona-daemon-b" ./cmd/daemon
           cmp "$RUNNER_TEMP/daytona-daemon-a" "$RUNNER_TEMP/daytona-daemon-b"
           sha256sum "$RUNNER_TEMP/daytona-daemon-a"

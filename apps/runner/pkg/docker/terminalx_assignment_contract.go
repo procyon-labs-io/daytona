@@ -157,6 +157,7 @@ type terminalXBootstrapIsolation struct {
 	ExpectedDaytonaDaemonUID     int    `json:"expectedDaytonaDaemonUid"`
 	ExpectedDockerVersion        string `json:"expectedDockerVersion"`
 	ExpectedProviderRevision     uint64 `json:"expectedProviderRevision"`
+	ExpectedRunnerBinaryDigest   string `json:"expectedRunnerBinaryDigest"`
 	ExpectedSandboxImageID       string `json:"expectedSandboxImageId"`
 	ExpectedSandboxSnapshotRef   string `json:"expectedSandboxSnapshotRef"`
 	ExpectedSandboxUser          string `json:"expectedSandboxUser"`
@@ -321,9 +322,11 @@ func (d *DockerClient) captureTerminalXAssignmentEvidenceConfiguration(
 		isolation.ExpectedProviderRevision > terminalXJavaScriptMaximumSafeInteger ||
 		isolation.ExpectedSupervisorUID != 0 || isolation.ExpectedDaytonaDaemonUID != d.terminalXDaytonaDaemonUID ||
 		isolation.ExpectedAgentUID != d.terminalXAgentUID ||
+		!terminalXSha256Raw.MatchString(isolation.ExpectedRunnerBinaryDigest) ||
+		isolation.ExpectedRunnerBinaryDigest != d.terminalXRunnerBinaryDigest ||
 		isolation.ExpectedSandboxImageID != d.terminalXSandboxImageID ||
 		isolation.ExpectedSandboxSnapshotRef != d.terminalXSandboxSnapshotRef ||
-		isolation.HardenedDaytonaSourceCommit != d.terminalXHardenedSourceCommit ||
+		isolation.HardenedDaytonaSourceCommit != d.terminalXRunnerSourceCommit ||
 		isolation.ExpectedSeccompProfileDigest != d.terminalXSeccompProfileSHA256 ||
 		isolation.ExpectedDockerVersion != d.terminalXDockerVersion ||
 		isolation.ExpectedContainerdVersion != d.terminalXContainerdVersion ||
@@ -704,7 +707,7 @@ func validateTerminalXBootstrapObjectShape(header map[string]any) error {
 	}
 	if _, err = terminalXExactObject(bootstrap["isolation"],
 		"attestationFile", "expectedAgentUid", "expectedContainerdVersion", "expectedDaytonaDaemonUid",
-		"expectedDockerVersion", "expectedProviderRevision", "expectedSandboxImageId", "expectedSandboxSnapshotRef",
+		"expectedDockerVersion", "expectedProviderRevision", "expectedRunnerBinaryDigest", "expectedSandboxImageId", "expectedSandboxSnapshotRef",
 		"expectedSandboxUser", "expectedSeccompProfileDigest", "expectedSupervisorUid", "hardenedDaytonaSourceCommit",
 		"issuerKeyId", "issuerPublicKeySpkiPem", "maximumAttestationTtlMs"); err != nil {
 		return err

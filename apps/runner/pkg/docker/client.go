@@ -62,7 +62,8 @@ type DockerClientConfig struct {
 	TerminalXDeploymentBindingInstallerSHA256  string
 	TerminalXIsolationProbeSHA256              string
 	TerminalXSandboxArtifactDigest             string
-	TerminalXHardenedSourceCommit              string
+	TerminalXRunnerSourceCommit                string
+	TerminalXRunnerBinaryDigest                string
 	TerminalXSeccompProfileSHA256              string
 	TerminalXBootstrapAuthorityKeyID           string
 	TerminalXBootstrapAuthorityPublicKeyFile   string
@@ -314,7 +315,8 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 		terminalXDeploymentBindingInstallerSHA256: config.TerminalXDeploymentBindingInstallerSHA256,
 		terminalXIsolationProbeSHA256:             config.TerminalXIsolationProbeSHA256,
 		terminalXSandboxArtifactDigest:            config.TerminalXSandboxArtifactDigest,
-		terminalXHardenedSourceCommit:             config.TerminalXHardenedSourceCommit,
+		terminalXRunnerSourceCommit:               config.TerminalXRunnerSourceCommit,
+		terminalXRunnerBinaryDigest:               config.TerminalXRunnerBinaryDigest,
 		terminalXSeccompProfileSHA256:             config.TerminalXSeccompProfileSHA256,
 		terminalXBootstrapAuthorityKeyID:          config.TerminalXBootstrapAuthorityKeyID,
 		terminalXBootstrapAuthorityPublicKey:      bootstrapAuthorityPublicKey,
@@ -401,7 +403,8 @@ type DockerClient struct {
 	terminalXDeploymentBindingInstallerSHA256 string
 	terminalXIsolationProbeSHA256             string
 	terminalXSandboxArtifactDigest            string
-	terminalXHardenedSourceCommit             string
+	terminalXRunnerSourceCommit               string
+	terminalXRunnerBinaryDigest               string
 	terminalXSeccompProfileSHA256             string
 	terminalXBootstrapAuthorityKeyID          string
 	terminalXBootstrapAuthorityPublicKey      ed25519.PublicKey

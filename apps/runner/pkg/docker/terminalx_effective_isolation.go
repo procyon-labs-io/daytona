@@ -227,6 +227,7 @@ type terminalXEffectiveIsolationClaims struct {
 	ProviderIdentityCommitment          string                                       `json:"providerIdentityCommitment"`
 	ProviderRevision                    uint64                                       `json:"providerRevision"`
 	Resources                           terminalXEffectiveIsolationResources         `json:"resources"`
+	RunnerBinaryDigest                  string                                       `json:"runnerBinaryDigest"`
 	RunnerEnforcement                   terminalXEffectiveIsolationRunnerEnforcement `json:"runnerEnforcement"`
 	RunnerNetwork                       terminalXEffectiveIsolationRunnerNetwork     `json:"runnerNetwork"`
 	SandboxUser                         string                                       `json:"sandboxUser"`
@@ -316,8 +317,9 @@ func (d *DockerClient) createTerminalXEffectiveIsolationAttestation(
 		d.terminalXEvidenceTTL > terminalXMaximumEvidenceTTL ||
 		d.terminalXDaytonaDaemonUID != terminalXSandboxUserUID ||
 		d.terminalXAgentUID != terminalXSandboxUserUID ||
-		!terminalXGitCommit.MatchString(d.terminalXHardenedSourceCommit) ||
-		d.terminalXHardenedSourceCommit == terminalXDaytonaBaseCommit ||
+		!terminalXGitCommit.MatchString(d.terminalXRunnerSourceCommit) ||
+		d.terminalXRunnerSourceCommit == terminalXDaytonaBaseCommit ||
+		!terminalXSha256Raw.MatchString(d.terminalXRunnerBinaryDigest) ||
 		!terminalXSha256Raw.MatchString(d.terminalXSeccompProfileSHA256) ||
 		!terminalXSafeTextReference.MatchString(d.terminalXDockerVersion) ||
 		!terminalXSafeTextReference.MatchString(d.terminalXContainerdVersion) ||
@@ -341,6 +343,8 @@ func (d *DockerClient) createTerminalXEffectiveIsolationAttestation(
 	if inspected.Config.Hostname != terminalXHardenedHostname || !environmentMatches ||
 		providerSandboxID != configuration.Assignment.ProviderSandboxID ||
 		inspected.Image != configuration.Isolation.ExpectedSandboxImageID ||
+		configuration.Isolation.ExpectedRunnerBinaryDigest != d.terminalXRunnerBinaryDigest ||
+		configuration.Isolation.HardenedDaytonaSourceCommit != d.terminalXRunnerSourceCommit ||
 		configuration.PlanDigest == "" || configuration.Assignment.ArtifactDigest != d.terminalXSandboxArtifactDigest {
 		return nil, fmt.Errorf("terminalx effective isolation assignment does not match")
 	}
@@ -383,12 +387,13 @@ func (d *DockerClient) createTerminalXEffectiveIsolationAttestation(
 			MemoryGiB: resources.MemoryGiB, Pids: resources.Pids,
 		},
 		SandboxUser:              terminalXSandboxUser,
+		RunnerBinaryDigest:       d.terminalXRunnerBinaryDigest,
 		SupervisorArtifactDigest: configuration.Assignment.SupervisorArtifactDigest,
 		Version:                  1,
 		Source: terminalXEffectiveIsolationSource{
 			BaseAncestryVerified: true,
 			BaseCommit:           terminalXDaytonaBaseCommit,
-			HardenedCommit:       d.terminalXHardenedSourceCommit,
+			HardenedCommit:       d.terminalXRunnerSourceCommit,
 		},
 		HardenedImage: terminalXEffectiveIsolationImage{
 			AuthorizationHeaderForwardedToSandbox:         false,

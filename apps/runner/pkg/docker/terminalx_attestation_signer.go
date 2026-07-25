@@ -55,9 +55,10 @@ func validateTerminalXAttestationRequirements(config DockerClientConfig) error {
 		!terminalXSha256Raw.MatchString(config.TerminalXSeccompProfileSHA256) {
 		return fmt.Errorf("terminalx hardened runner evidence digests are invalid")
 	}
-	if !terminalXGitCommit.MatchString(config.TerminalXHardenedSourceCommit) ||
-		config.TerminalXHardenedSourceCommit == terminalXDaytonaBaseCommit {
-		return fmt.Errorf("terminalx hardened runner source commit is invalid")
+	if !terminalXGitCommit.MatchString(config.TerminalXRunnerSourceCommit) ||
+		config.TerminalXRunnerSourceCommit == terminalXDaytonaBaseCommit ||
+		!terminalXSha256Raw.MatchString(config.TerminalXRunnerBinaryDigest) {
+		return fmt.Errorf("terminalx hardened runner measured identity is invalid")
 	}
 	if !safeTerminalXPublicReference(config.TerminalXDeploymentBindingKeyID) ||
 		!safeTerminalXPublicReference(config.TerminalXIsolationAttestorKeyID) ||
