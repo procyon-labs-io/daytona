@@ -176,7 +176,8 @@ func newTerminalXContractFixture(t *testing.T) *terminalXContractFixture {
 		terminalXSandboxImageID:              testTerminalXImageID,
 		terminalXSandboxSnapshotRef:          testTerminalXSnapshotRef,
 		terminalXSandboxArtifactDigest:       testTerminalXArtifactDigest,
-		terminalXHardenedSourceCommit:        testTerminalXHardenedCommit,
+		terminalXRunnerSourceCommit:          testTerminalXHardenedCommit,
+		terminalXRunnerBinaryDigest:          strings.Repeat("9", 64),
 		terminalXSeccompProfileSHA256:        testTerminalXSeccompDigest,
 		terminalXBootstrapAuthorityKeyID:     "platform-bootstrap-1",
 		terminalXBootstrapAuthorityPublicKey: bytes.Clone(authorityPublic),
@@ -332,6 +333,7 @@ func (fixture *terminalXContractFixture) bootstrap() map[string]any {
 			"expectedDaytonaDaemonUid":     1000,
 			"expectedDockerVersion":        "29.1.3",
 			"expectedProviderRevision":     7,
+			"expectedRunnerBinaryDigest":   strings.Repeat("9", 64),
 			"expectedSandboxImageId":       testTerminalXImageID,
 			"expectedSandboxSnapshotRef":   testTerminalXSnapshotRef,
 			"expectedSandboxUser":          terminalXSandboxUser,
@@ -622,6 +624,9 @@ func TestTerminalXBootstrapEnvelopeRejectsActivationBindingDrift(t *testing.T) {
 		"manifest set digest": func(bootstrap map[string]any) {
 			manifest := bootstrap["effect"].(map[string]any)["manifest"].(map[string]any)
 			manifest["authority"].(map[string]any)["claimsDigest"] = strings.Repeat("9", 64)
+		},
+		"runner binary digest": func(bootstrap map[string]any) {
+			bootstrap["isolation"].(map[string]any)["expectedRunnerBinaryDigest"] = strings.Repeat("8", 64)
 		},
 		"terminal frame exceeds pending output": func(bootstrap map[string]any) {
 			terminal := bootstrap["terminal"].(map[string]any)
@@ -1359,7 +1364,8 @@ func TestTerminalXAttestationAuthoritiesRemainCryptographicallySeparated(t *test
 			TerminalXIsolationProbeSHA256:              strings.Repeat("2", 64),
 			TerminalXSandboxArtifactDigest:             strings.Repeat("3", 64),
 			TerminalXSeccompProfileSHA256:              strings.Repeat("4", 64),
-			TerminalXHardenedSourceCommit:              testTerminalXHardenedCommit,
+			TerminalXRunnerSourceCommit:                testTerminalXHardenedCommit,
+			TerminalXRunnerBinaryDigest:                strings.Repeat("8", 64),
 			TerminalXDeploymentBindingKeyID:            "deployment-binding-key-1",
 			TerminalXDeploymentBindingPrivateKeyFile:   "/run/terminalx-secrets/deployment-binding.pem",
 			TerminalXDeploymentBindingPublicKeySHA256:  strings.Repeat("5", 64),
@@ -1377,6 +1383,12 @@ func TestTerminalXAttestationAuthoritiesRemainCryptographicallySeparated(t *test
 		t.Fatalf("valid separated attestation identities rejected: %v", err)
 	}
 	tests := map[string]func(*DockerClientConfig){
+		"base source revision": func(value *DockerClientConfig) {
+			value.TerminalXRunnerSourceCommit = terminalXDaytonaBaseCommit
+		},
+		"uppercase runner digest": func(value *DockerClientConfig) {
+			value.TerminalXRunnerBinaryDigest = strings.Repeat("A", 64)
+		},
 		"bootstrap key id equals deployment": func(value *DockerClientConfig) {
 			value.TerminalXBootstrapAuthorityKeyID = value.TerminalXDeploymentBindingKeyID
 		},

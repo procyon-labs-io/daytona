@@ -29,6 +29,7 @@ import (
 	"github.com/daytonaio/runner/pkg/sshgateway"
 	"github.com/daytonaio/runner/pkg/telemetry/filters"
 	"github.com/daytonaio/runner/pkg/terminalxdocker"
+	"github.com/daytonaio/runner/pkg/terminalxidentity"
 	"github.com/daytonaio/runner/pkg/terminalxlog"
 	"github.com/docker/docker/client"
 	"github.com/lmittmann/tint"
@@ -67,6 +68,21 @@ func run() int {
 	if err := cfg.ValidateTerminalXProcessBoundary(); err != nil {
 		logger.Error("TerminalX process boundary validation failed", "error", err)
 		return 2
+	}
+	var runtimeIdentity terminalxidentity.Identity
+	if cfg.TerminalXHardened {
+		runtimeIdentity, err = terminalxidentity.MeasureRunning()
+		if err != nil {
+			logger.Error("TerminalX runner identity measurement failed", "error", err)
+			return 2
+		}
+		if err := cfg.ValidateTerminalXRuntimeIdentity(
+			runtimeIdentity.SourceCommit,
+			runtimeIdentity.RunnerBinaryDigest,
+		); err != nil {
+			logger.Error("TerminalX runner identity validation failed", "error", err)
+			return 2
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -152,16 +168,20 @@ func run() int {
 	}
 	defer netRulesManager.Stop()
 
-	daemonPath, err := daemon.WriteStaticBinary("daemon-amd64")
-	if err != nil {
-		logger.Error("Error writing daemon binary", "error", err)
-		return 2
-	}
+	daemonPath := ""
+	pluginPath := ""
+	if !cfg.TerminalXHardened {
+		daemonPath, err = daemon.WriteStaticBinary("daemon-amd64")
+		if err != nil {
+			logger.Error("Error writing daemon binary", "error", err)
+			return 2
+		}
 
-	pluginPath, err := daemon.WriteStaticBinary("daytona-computer-use")
-	if err != nil {
-		logger.Error("Error writing plugin binary", "error", err)
-		return 2
+		pluginPath, err = daemon.WriteStaticBinary("daytona-computer-use")
+		if err != nil {
+			logger.Error("Error writing plugin binary", "error", err)
+			return 2
+		}
 	}
 
 	backupInfoCache := cache.NewBackupInfoCache(ctx, cfg.BackupInfoCacheRetention)
@@ -221,7 +241,8 @@ func run() int {
 		TerminalXDeploymentBindingInstallerSHA256:  cfg.TerminalXDeploymentBindingInstallerSHA256,
 		TerminalXIsolationProbeSHA256:              cfg.TerminalXIsolationProbeSHA256,
 		TerminalXSandboxArtifactDigest:             cfg.TerminalXSandboxArtifactDigest,
-		TerminalXHardenedSourceCommit:              cfg.TerminalXHardenedSourceCommit,
+		TerminalXRunnerSourceCommit:                runtimeIdentity.SourceCommit,
+		TerminalXRunnerBinaryDigest:                runtimeIdentity.RunnerBinaryDigest,
 		TerminalXSeccompProfileSHA256:              cfg.TerminalXSeccompProfileSHA256,
 		TerminalXBootstrapAuthorityKeyID:           cfg.TerminalXBootstrapAuthorityKeyID,
 		TerminalXBootstrapAuthorityPublicKeyFile:   cfg.TerminalXBootstrapAuthorityPublicKeyFile,

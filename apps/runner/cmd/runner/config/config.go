@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -87,7 +88,7 @@ type Config struct {
 	TerminalXDeploymentBindingInstallerSHA256  string        `envconfig:"TERMINALX_DEPLOYMENT_BINDING_INSTALLER_SHA256"`
 	TerminalXIsolationProbeSHA256              string        `envconfig:"TERMINALX_ISOLATION_PROBE_SHA256"`
 	TerminalXSandboxArtifactDigest             string        `envconfig:"TERMINALX_SANDBOX_ARTIFACT_DIGEST"`
-	TerminalXHardenedSourceCommit              string        `envconfig:"TERMINALX_HARDENED_SOURCE_COMMIT"`
+	TerminalXExpectedSourceCommit              string        `envconfig:"TERMINALX_EXPECTED_SOURCE_COMMIT"`
 	TerminalXSeccompProfileSHA256              string        `envconfig:"TERMINALX_SECCOMP_PROFILE_SHA256"`
 	TerminalXBootstrapAuthorityKeyID           string        `envconfig:"TERMINALX_BOOTSTRAP_AUTHORITY_KEY_ID"`
 	TerminalXBootstrapAuthorityPublicKeyFile   string        `envconfig:"TERMINALX_BOOTSTRAP_AUTHORITY_PUBLIC_KEY_FILE"`
@@ -104,6 +105,13 @@ type Config struct {
 }
 
 var DEFAULT_API_PORT int = 8080
+
+var (
+	terminalXGitCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	terminalXSHA256    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
+const terminalXDaytonaBaseCommit = "b5a5d9e78d76c8bcf351f2049620250e0f34eea4"
 
 var config *Config
 
@@ -203,6 +211,25 @@ func (c *Config) ValidateTerminalXProcessBoundary() error {
 		strings.TrimSpace(c.DockerCertPathOverride) != "" ||
 		strings.TrimSpace(c.DockerTLSVerifyOverride) != "" {
 		return fmt.Errorf("TerminalX hardened runner does not permit Docker client environment overrides")
+	}
+	return nil
+}
+
+// ValidateTerminalXRuntimeIdentity treats the environment commit only as an
+// equality assertion over identity already measured from the running binary.
+// It can never select or replace the embedded VCS revision or executable
+// digest.
+func (c *Config) ValidateTerminalXRuntimeIdentity(sourceCommit string, runnerBinaryDigest string) error {
+	if !c.TerminalXHardened {
+		return nil
+	}
+	if !terminalXGitCommit.MatchString(sourceCommit) || sourceCommit == terminalXDaytonaBaseCommit ||
+		!terminalXSHA256.MatchString(runnerBinaryDigest) {
+		return fmt.Errorf("TerminalX hardened runner measured identity is invalid")
+	}
+	if !terminalXGitCommit.MatchString(c.TerminalXExpectedSourceCommit) ||
+		c.TerminalXExpectedSourceCommit != sourceCommit {
+		return fmt.Errorf("TerminalX hardened runner source assertion does not match measured identity")
 	}
 	return nil
 }
