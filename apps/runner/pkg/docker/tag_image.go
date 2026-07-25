@@ -10,6 +10,9 @@ import (
 )
 
 func (d *DockerClient) TagImage(ctx context.Context, sourceImage string, targetImage string) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner image tags are immutable")
+	}
 	d.logger.InfoContext(ctx, "Tagging image", "sourceImage", sourceImage, "targetImage", targetImage)
 
 	// Extract repository and tag from targetImage

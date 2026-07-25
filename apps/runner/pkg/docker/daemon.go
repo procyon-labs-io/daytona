@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var errTerminalXDaemonIsPrivate = errors.New("terminalx hardened daemon is private to the root supervisor")
 
 func (d *DockerClient) startDaytonaDaemon(ctx context.Context, containerId string, workDir string) error {
 	defer timer.Timer()()
@@ -58,6 +61,9 @@ func (d *DockerClient) startDaytonaDaemon(ctx context.Context, containerId strin
 
 func (d *DockerClient) waitForDaemonRunning(ctx context.Context, containerIP string, authToken *string) (string, error) {
 	defer timer.Timer()()
+	if d.terminalXHardened {
+		return "", errTerminalXDaemonIsPrivate
+	}
 
 	tracer := otel.Tracer("runner")
 	ctx, span := tracer.Start(ctx, "wait_for_daemon_running",

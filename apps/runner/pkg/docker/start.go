@@ -30,8 +30,25 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	if err != nil {
 		return nil, "", err
 	}
+	if d.terminalXHardened {
+		if metadata != nil && metadata["volumes"] != "" {
+			return nil, "", errors.New("terminalx hardened sandbox does not permit shared volumes")
+		}
+		// The container receives its bridge address at create time.  Install the
+		// fail-closed chain before either starting it or declaring an externally
+		// started instance ready.
+		if err := d.enforceTerminalXNetworkPolicy(ctx, c); err != nil {
+			return nil, "", err
+		}
+	}
 
 	if c.State.Running {
+		if d.terminalXHardened {
+			if err := d.requireTerminalXProvisionalReady(c); err != nil {
+				return nil, "", err
+			}
+			return c, "", nil
+		}
 		containerIP := GetContainerIpAddress(ctx, c)
 		if containerIP == "" {
 			return nil, "", errors.New("sandbox IP not found? Is the sandbox started?")
@@ -73,6 +90,12 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	if err != nil {
 		return nil, "", err
 	}
+	if d.terminalXHardened {
+		if err := d.requireTerminalXProvisionalReady(runningContainer); err != nil {
+			return nil, "", err
+		}
+		return runningContainer, "", nil
+	}
 
 	containerIP := GetContainerIpAddress(ctx, runningContainer)
 	if containerIP == "" {
@@ -98,7 +121,7 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 		return runningContainer, "", nil
 	}
 
-	if !slices.Equal(c.Config.Entrypoint, strslice.StrSlice{common.DAEMON_PATH}) {
+	if !d.terminalXHardened && !slices.Equal(c.Config.Entrypoint, strslice.StrSlice{common.DAEMON_PATH}) {
 		processesCtx := context.Background()
 		go func() {
 			if err := d.startDaytonaDaemon(processesCtx, containerId, c.Config.WorkingDir); err != nil {
@@ -126,6 +149,13 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	}
 
 	return runningContainer, daemonVersion, nil
+}
+
+func (d *DockerClient) requireTerminalXProvisionalReady(inspected *container.InspectResponse) error {
+	if !d.terminalXHardened || inspected == nil || inspected.State == nil || !inspected.State.Running {
+		return errors.New("terminalx hardened sandbox is not provisionally running")
+	}
+	return d.requireTerminalXContainer(inspected)
 }
 
 func (d *DockerClient) waitForContainerRunning(ctx context.Context, containerId string) (*container.InspectResponse, error) {

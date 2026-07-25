@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/daytonaio/runner/pkg/api/dto"
@@ -23,9 +24,17 @@ type ImageDigest struct {
 }
 
 func (d *DockerClient) GetImageInfo(ctx context.Context, imageName string) (*ImageInfo, error) {
+	if d.terminalXHardened && imageName != d.terminalXSandboxSnapshotRef && imageName != d.terminalXSandboxImageID {
+		return nil, fmt.Errorf("terminalx hardened runner only inspects the pinned local image")
+	}
 	inspect, err := d.apiClient.ImageInspect(ctx, imageName)
 	if err != nil {
 		return nil, err
+	}
+	if d.terminalXHardened {
+		if err := d.validateTerminalXImageArtifact(&inspect); err != nil {
+			return nil, err
+		}
 	}
 
 	// Extract digest from RepoDigests instead of using ID
@@ -52,6 +61,9 @@ func (d *DockerClient) GetImageInfo(ctx context.Context, imageName string) (*Ima
 }
 
 func (d *DockerClient) InspectImageInRegistry(ctx context.Context, imageName string, registry *dto.RegistryDTO) (*ImageDigest, error) {
+	if d.terminalXHardened {
+		return nil, fmt.Errorf("terminalx hardened runner does not permit registry inspection")
+	}
 	digest, err := d.apiClient.DistributionInspect(ctx, imageName, getRegistryAuth(registry))
 	if err != nil {
 		return nil, err

@@ -22,6 +22,9 @@ import (
 )
 
 func (d *DockerClient) BuildImage(ctx context.Context, buildImageDto dto.BuildSnapshotRequestDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened runner accepts only its pre-pinned image")
+	}
 	if !strings.Contains(buildImageDto.Snapshot, ":") || strings.HasSuffix(buildImageDto.Snapshot, ":") {
 		return fmt.Errorf("invalid image format: must contain exactly one colon (e.g., 'myimage:1.0')")
 	}

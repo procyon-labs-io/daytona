@@ -61,6 +61,21 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	if image == nil {
 		return nil, fmt.Errorf("image not found for sandbox: %s", sandboxDto.Id)
 	}
+	if d.terminalXHardened {
+		if err := validateTerminalXCreateRequest(sandboxDto); err != nil {
+			return nil, err
+		}
+		artifactDigest, _, _, _ := terminalXCreateBindingFromMetadata(sandboxDto.Metadata)
+		if artifactDigest != d.terminalXSandboxArtifactDigest {
+			return nil, fmt.Errorf("terminalx hardened sandbox artifact binding does not match")
+		}
+		if err := validateTerminalXSnapshotReference(sandboxDto, d.terminalXSandboxSnapshotRef); err != nil {
+			return nil, err
+		}
+		if err := d.validateTerminalXImageArtifact(image); err != nil {
+			return nil, err
+		}
+	}
 
 	envVars := []string{
 		"DAYTONA_SANDBOX_ID=" + sandboxDto.Id,
@@ -88,15 +103,15 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	if sandboxDto.OtelEndpoint != nil && *sandboxDto.OtelEndpoint != "" {
+	if !d.terminalXHardened && sandboxDto.OtelEndpoint != nil && *sandboxDto.OtelEndpoint != "" {
 		envVars = append(envVars, "DAYTONA_OTEL_ENDPOINT="+*sandboxDto.OtelEndpoint)
 	}
 
-	if sandboxDto.OrganizationId != nil && *sandboxDto.OrganizationId != "" {
+	if !d.terminalXHardened && sandboxDto.OrganizationId != nil && *sandboxDto.OrganizationId != "" {
 		envVars = append(envVars, "DAYTONA_ORGANIZATION_ID="+*sandboxDto.OrganizationId)
 	}
 
-	if sandboxDto.RegionId != nil && *sandboxDto.RegionId != "" {
+	if !d.terminalXHardened && sandboxDto.RegionId != nil && *sandboxDto.RegionId != "" {
 		envVars = append(envVars, "DAYTONA_REGION_ID="+*sandboxDto.RegionId)
 	}
 
@@ -122,6 +137,22 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	if gpuIndex != nil {
 		labels[GpuIndexLabel] = strconv.Itoa(*gpuIndex)
 	}
+	if d.terminalXHardened {
+		labels[terminalXHardenedProfileLabel] = terminalXHardenedProfileVersion
+		labels[terminalXSupervisorRelayDigestLabel] = d.terminalXSupervisorRelaySHA256
+		labels[terminalXAssignmentBootstrapDigestLabel] = d.terminalXAssignmentBootstrapSHA256
+		labels[terminalXNodeDigestLabel] = d.terminalXNodeSHA256
+		labels[terminalXDeploymentBindingInstallerDigestLabel] = d.terminalXDeploymentBindingInstallerSHA256
+		labels[terminalXIsolationProbeDigestLabel] = d.terminalXIsolationProbeSHA256
+		artifactDigest, revision, planDigest, _ := terminalXCreateBindingFromMetadata(sandboxDto.Metadata)
+		labels[terminalXSandboxArtifactDigestLabel] = artifactDigest
+		labels[terminalXSandboxRevisionLabel] = revision
+		labels[terminalXSandboxPlanDigestLabel] = planDigest
+	}
+	hostname := sandboxDto.Id
+	if d.terminalXHardened {
+		hostname = terminalXHardenedHostname
+	}
 
 	// Android-device sandboxes run the image's native entrypoint (e.g. the docker-android
 	// emulator bootstrap) and never host the daytona daemon. We mark the container with a
@@ -129,7 +160,7 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	if sandboxDto.IsAndroidSandbox() {
 		labels[androidDeviceLabel] = "true"
 		return &container.Config{
-			Hostname:     sandboxDto.Id,
+			Hostname:     hostname,
 			Image:        sandboxDto.Snapshot,
 			Env:          envVars,
 			Labels:       labels,
@@ -165,7 +196,7 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	}
 
 	return &container.Config{
-		Hostname:     sandboxDto.Id,
+		Hostname:     hostname,
 		Image:        sandboxDto.Snapshot,
 		WorkingDir:   workingDir,
 		Env:          envVars,
@@ -178,6 +209,9 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 }
 
 func (d *DockerClient) getContainerHostConfig(sandboxDto dto.CreateSandboxDTO, volumeMountPathBinds []string, gpuIndex *int) (*container.HostConfig, error) {
+	if d.terminalXHardened {
+		return d.terminalXHostConfig(sandboxDto, volumeMountPathBinds, gpuIndex)
+	}
 	// Android-device sandboxes run on plain docker runtime, without the bundled
 	// daytona daemon, and require /dev/kvm to be mounted for emulator acceleration.
 	if sandboxDto.IsAndroidSandbox() {

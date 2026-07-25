@@ -35,5 +35,23 @@ func (manager *NetRulesManager) UnassignNetworkRules(name string) error {
 		}
 	}
 
+	hostRules, err := manager.ipt.List("filter", "INPUT")
+	if err != nil {
+		return err
+	}
+	comment := hostRuleComment(name)
+	for _, rule := range hostRules {
+		if !strings.Contains(rule, comment) {
+			continue
+		}
+		args, err := ParseRuleArguments(rule)
+		if err != nil {
+			continue
+		}
+		if err := manager.ipt.Delete("filter", "INPUT", args...); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

@@ -4,6 +4,7 @@
 package pty
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -21,22 +22,34 @@ func (s *PTYSession) attachWebSocket(ws *websocket.Conn) {
 		done: make(chan struct{}),
 	}
 
-	// Register client FIRST so it can receive PTY output via broadcast
-	s.clients.Set(cl.id, cl)
-	count := s.clients.Count()
-	s.logger.Debug("Client attached to PTY session", "clientId", cl.id, "sessionId", s.info.ID, "clientCount", count)
+	// Register under the same lifecycle lock used to mark teardown. Therefore
+	// registration either happens before closing (and the teardown sweep must
+	// observe it), or is rejected after closing; it can never appear after the
+	// sweep has completed.
+	ctx, sessionID, count, registered := s.registerClient(cl)
+	if !registered {
+		cl.close()
+		return
+	}
+	s.logger.Debug("Client attached to PTY session", "clientId", cl.id, "sessionId", sessionID, "clientCount", count)
 
-	// Start PTY data flow - writer (PTY -> this client)
-	go s.clientWriter(cl)
-
-	// Send success control message after client is registered and ready
+	// The connected control frame is the protocol fence: the supervisor ignores
+	// binary frames before it. Keep the client registered so concurrent PTY
+	// output is queued, but do not start the queue-draining writer until this
+	// synchronous frame succeeds. That makes connected unconditionally first.
 	successMsg := map[string]interface{}{
 		"type":   "control",
 		"status": "connected",
 	}
-	if successJSON, err := json.Marshal(successMsg); err == nil {
-		_ = cl.writeMessage(websocket.TextMessage, successJSON)
+	successJSON, err := json.Marshal(successMsg)
+	if err != nil || cl.writeMessage(websocket.TextMessage, successJSON) != nil {
+		s.clients.Remove(cl.id)
+		cl.close()
+		return
 	}
+
+	// Start PTY data flow - writer (PTY -> this client) only after the fence.
+	go s.clientWriter(ctx, cl)
 
 	// reader (this client -> PTY); blocks until disconnect
 	s.clientReader(cl)
@@ -47,14 +60,24 @@ func (s *PTYSession) attachWebSocket(ws *websocket.Conn) {
 	cl.close()
 
 	remaining := s.clients.Count()
-	s.logger.Debug("Client detached from PTY session", "clientId", cl.id, "sessionId", s.info.ID, "clientCount", remaining)
+	s.logger.Debug("Client detached from PTY session", "clientId", cl.id, "sessionId", sessionID, "clientCount", remaining)
+}
+
+func (s *PTYSession) registerClient(cl *wsClient) (context.Context, string, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || !s.info.Active || s.ctx == nil {
+		return nil, s.info.ID, s.clients.Count(), false
+	}
+	s.clients.Set(cl.id, cl)
+	return s.ctx, s.info.ID, s.clients.Count(), true
 }
 
 // clientWriter sends PTY output to a specific WebSocket client
-func (s *PTYSession) clientWriter(cl *wsClient) {
+func (s *PTYSession) clientWriter(ctx context.Context, cl *wsClient) {
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-cl.done:
 			return

@@ -21,9 +21,10 @@ func NewPTYManager() *PTYManager {
 	}
 }
 
-// Add adds a PTY session to the manager
-func (m *PTYManager) Add(s *PTYSession) {
-	m.sessions.Set(s.info.ID, s)
+// Add atomically adds a PTY session to the manager. It returns false when the
+// identifier is already owned by another session.
+func (m *PTYManager) Add(s *PTYSession) bool {
+	return m.sessions.SetIfAbsent(s.info.ID, s)
 }
 
 // Get retrieves a PTY session by ID
@@ -34,11 +35,16 @@ func (m *PTYManager) Get(id string) (*PTYSession, bool) {
 
 // Delete removes a PTY session from the manager
 func (m *PTYManager) Delete(id string) (*PTYSession, bool) {
-	s, ok := m.sessions.Get(id)
-	if ok {
-		m.sessions.Remove(id)
-	}
-	return s, ok
+	return m.sessions.Pop(id)
+}
+
+// DeleteExact removes id only while it is still owned by expected. This
+// prevents an old process reaper from deleting a newer session that reused the
+// same identifier after explicit teardown.
+func (m *PTYManager) DeleteExact(id string, expected *PTYSession) bool {
+	return m.sessions.RemoveCb(id, func(_ string, current *PTYSession, exists bool) bool {
+		return exists && current == expected
+	})
 }
 
 // List returns information about all managed PTY sessions
@@ -52,7 +58,7 @@ func (m *PTYManager) List() []PTYSessionInfo {
 
 func (m *PTYManager) VerifyPTYSessionReady(id string) (*PTYSession, error) {
 	// Validate session existence and send control message
-	session, ok := ptyManager.Get(id)
+	session, ok := m.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("PTY session %s not found", id)
 	}
@@ -76,7 +82,7 @@ func (m *PTYManager) VerifyPTYSessionReady(id string) (*PTYSession, error) {
 }
 
 func (m *PTYManager) VerifyPTYSessionForResize(id string) (*PTYSession, error) {
-	session, ok := ptyManager.Get(id)
+	session, ok := m.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("PTY session %s not found", id)
 	}

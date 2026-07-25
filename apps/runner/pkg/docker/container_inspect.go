@@ -23,6 +23,11 @@ func (d *DockerClient) ContainerInspect(ctx context.Context, containerId string)
 
 		return nil, errMsg
 	}
+	if d.terminalXHardened {
+		if err := d.requireTerminalXContainer(&container); err != nil {
+			return nil, fmt.Errorf("terminalx hardened sandbox validation failed: %w", err)
+		}
+	}
 
 	return &container, nil
 }

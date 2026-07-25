@@ -18,6 +18,9 @@ import (
 )
 
 func (d *DockerClient) Destroy(ctx context.Context, containerId string) error {
+	if d.terminalXHardened && !terminalXProviderSandboxUUID.MatchString(containerId) {
+		return fmt.Errorf("terminalx hardened sandbox identity must be a lowercase UUIDv4")
+	}
 	startTime := time.Now()
 	defer func() {
 		obs, err := common.ContainerOperationDuration.GetMetricWithLabelValues("destroy")
@@ -32,7 +35,7 @@ func (d *DockerClient) Destroy(ctx context.Context, containerId string) error {
 	// error and the container is still around, so a retry can finish cleanup.
 	teardownLinkNetwork := false
 	defer func() {
-		if !teardownLinkNetwork {
+		if d.terminalXHardened || !teardownLinkNetwork {
 			return
 		}
 		if err := d.teardownOwnedLinkNetwork(ctx, containerId); err != nil {

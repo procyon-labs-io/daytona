@@ -21,6 +21,9 @@ func (d *DockerClient) Stop(ctx context.Context, containerId string, force bool)
 	}
 
 	if err != nil {
+		if d.terminalXHardened {
+			return err
+		}
 		d.logger.WarnContext(ctx, "Failed to get sandbox state", "containerId", containerId, "error", err)
 		d.logger.WarnContext(ctx, "Continuing with stop operation")
 	}

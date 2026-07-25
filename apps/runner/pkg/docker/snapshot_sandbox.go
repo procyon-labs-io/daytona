@@ -45,6 +45,12 @@ func snapshotCanonicalImageRef(reg *dto.RegistryDTO, hash string) string {
 // snapshot record. Running containers are briefly paused during commit to
 // produce a consistent on-disk snapshot.
 func (d *DockerClient) CreateSnapshotFromSandbox(ctx context.Context, sandboxID string, registry *dto.RegistryDTO) (*dto.SnapshotInfoResponse, error) {
+	if d.terminalXHardened {
+		// Docker commit would include root-owned supervisor state and per-
+		// assignment signing material.  A future checkpoint implementation must
+		// copy only an explicitly allow-listed non-root workspace tree.
+		return nil, fmt.Errorf("terminalx hardened sandbox snapshots require the protected checkpoint path")
+	}
 	if registry == nil || strings.TrimSpace(registry.Url) == "" {
 		return nil, fmt.Errorf("registry is required for sandbox snapshot")
 	}

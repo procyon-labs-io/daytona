@@ -171,12 +171,12 @@ print(response.result)
 ### Typescript SDK
 
 ```jsx
-import { Daytona } from "@daytona/sdk";
+import { Daytona } from '@daytona/sdk'
 
-const daytona = new Daytona({ apiKey: "YOUR_API_KEY" });
-const sandbox = await daytona.create();
-const response = await sandbox.process.codeRun('print("Hello World!")');
-console.log(response.result);
+const daytona = new Daytona({ apiKey: 'YOUR_API_KEY' })
+const sandbox = await daytona.create()
+const response = await sandbox.process.codeRun('print("Hello World!")')
+console.log(response.result)
 ```
 
 ### Ruby SDK
@@ -250,6 +250,13 @@ curl 'https://app.daytona.io/api/sandbox' \
 ```bash
 daytona create
 ```
+
+## TerminalX hardened derivative
+
+This public fork is also the source base for TerminalX's dedicated hosted Runtime. Production uses
+a reviewed descendant of `b5a5d9e78d76c8bcf351f2049620250e0f34eea4`; the base revision itself is
+not treated as isolated. See the [hardened runner contract](guides/terminalx-hardened-runner.md) for
+the fail-closed image, resource, mount, identity, and network requirements.
 
 ## Development
 

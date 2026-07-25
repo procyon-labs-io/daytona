@@ -20,6 +20,9 @@ type daemonVersionResponse struct {
 }
 
 func (d *DockerClient) GetDaemonVersion(ctx context.Context, sandboxId string) (string, error) {
+	if d.terminalXHardened {
+		return "", errTerminalXDaemonIsPrivate
+	}
 	c, err := d.ContainerInspect(ctx, sandboxId)
 	if err != nil {
 		return "", err

@@ -32,6 +32,22 @@ func (d *DockerClient) UpdateNetworkSettings(ctx context.Context, containerId st
 		allowListTrimmed = strings.TrimSpace(*updateNetworkSettingsDto.NetworkAllowList)
 		hasAllowList = allowListTrimmed != ""
 	}
+	if d.terminalXHardened {
+		hasDomainAllowList := updateNetworkSettingsDto.DomainAllowList != nil &&
+			strings.TrimSpace(*updateNetworkSettingsDto.DomainAllowList) != ""
+		if !blockAll || hasAllowList || hasDomainAllowList {
+			return errors.New("terminalx hardened sandbox network policy is immutable")
+		}
+		// Re-assert the blocking policy synchronously.  The optional traffic
+		// limiter may only narrow this policy further and is handled below.
+		if err := d.netRulesManager.SetBlockedNetworkRules(containerShortId, ipAddress); err != nil {
+			return err
+		}
+		if updateNetworkSettingsDto.NetworkLimitEgress != nil && *updateNetworkSettingsDto.NetworkLimitEgress {
+			return d.netRulesManager.SetNetworkLimiter(containerShortId, ipAddress)
+		}
+		return nil
+	}
 
 	switch {
 	case blockAll:

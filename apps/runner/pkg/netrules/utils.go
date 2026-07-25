@@ -11,7 +11,8 @@ import (
 
 const (
 	// ChainPrefix is the prefix used for all Daytona sandbox chains
-	ChainPrefix = "DAYTONA-SB-"
+	ChainPrefix           = "DAYTONA-SB-"
+	hostRuleCommentPrefix = "terminalx-host-"
 )
 
 // ParseCidrNetworks parses a comma-separated list of CIDR networks and returns them as an array
@@ -33,6 +34,11 @@ func parseCidrNetworks(networks string) ([]*net.IPNet, error) {
 	}
 
 	return cidrs, nil
+}
+
+func hostRuleComment(name string) string {
+	name = strings.TrimPrefix(name, ChainPrefix)
+	return hostRuleCommentPrefix + name
 }
 
 // ParseRuleArguments parses an iptables rule string and returns the arguments

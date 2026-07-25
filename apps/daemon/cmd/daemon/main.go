@@ -6,10 +6,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +31,14 @@ import (
 	"github.com/daytonaio/daemon/pkg/toolbox"
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-isatty"
+	"golang.org/x/sys/unix"
 	"gopkg.in/natefinch/lumberjack.v2"
+)
+
+const (
+	terminalXToolboxListenerArgument = "--terminalx-toolbox-listener-fd=3"
+	terminalXToolboxListenerFD       = 3
+	terminalXToolboxSocketPath       = "/run/terminalx-private/daytona-daemon.sock"
 )
 
 func main() {
@@ -50,6 +61,17 @@ func run() int {
 	// Redirect standard library log to slog
 	golog.SetOutput(&log.DebugLogWriter{})
 
+	args := os.Args[1:]
+	terminalXListener, terminalXHardened, err := inheritedTerminalXToolboxListener(args)
+	if err != nil {
+		logger.Error("Invalid TerminalX daemon listener", "error", err)
+		return 2
+	}
+	if terminalXListener != nil {
+		defer terminalXListener.Close()
+		args = nil
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		logger.Error("Failed to get user home directory", "error", err)
@@ -66,7 +88,6 @@ func run() int {
 	entrypointLogFilePath := filepath.Join(configDir, "sessions", util.EntrypointSessionID, util.EntrypointCommandID, "output.log")
 
 	// Check if user wants to read entrypoint logs
-	args := os.Args[1:]
 	if len(args) == 2 && args[0] == "entrypoint" && args[1] == "logs" {
 		err := util.ReadEntrypointLogs(entrypointLogFilePath)
 		if err != nil {
@@ -190,6 +211,7 @@ func run() int {
 		RegionId:              c.RegionId,
 		Snapshot:              c.Snapshot,
 		EntrypointLogFilePath: entrypointLogFilePath,
+		Listener:              terminalXListener,
 	})
 
 	// Start the toolbox server in a go routine
@@ -200,27 +222,28 @@ func run() int {
 		}
 	}()
 
-	// Start terminal server
-	go func() {
-		if err := terminal.StartTerminalServer(22222); err != nil {
-			errChan <- err
-		}
-	}()
+	if !terminalXHardened {
+		// Legacy listeners remain available only outside the hardened image. The
+		// inherited Unix toolbox listener is the sole TerminalX ingress.
+		go func() {
+			if err := terminal.StartTerminalServer(22222); err != nil {
+				errChan <- err
+			}
+		}()
 
-	// Start recording dashboard server
-	go func() {
-		if err := recordingdashboard.NewDashboardServer(logger, recordingService).Start(); err != nil {
-			errChan <- err
-		}
-	}()
+		go func() {
+			if err := recordingdashboard.NewDashboardServer(logger, recordingService).Start(); err != nil {
+				errChan <- err
+			}
+		}()
 
-	sshServer := ssh.NewServer(logger, workDir, workDir)
-
-	go func() {
-		if err := sshServer.Start(); err != nil {
-			errChan <- err
-		}
-	}()
+		sshServer := ssh.NewServer(logger, workDir, workDir)
+		go func() {
+			if err := sshServer.Start(); err != nil {
+				errChan <- err
+			}
+		}()
+	}
 
 	// Reap zombie children. The daemon runs as PID 1 inside containers, so
 	// orphaned processes (e.g. from process.exec) get reparented here.
@@ -246,4 +269,80 @@ func run() int {
 
 	slog.Info("Shutdown complete")
 	return 0
+}
+
+func inheritedTerminalXToolboxListener(args []string) (net.Listener, bool, error) {
+	requested, err := terminalXListenerRequested(args)
+	if err != nil || !requested {
+		return nil, false, err
+	}
+	listener, err := adoptTerminalXToolboxListener(
+		terminalXToolboxListenerFD,
+		terminalXToolboxSocketPath,
+		disableProcessDumpability,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	return listener, true, nil
+}
+
+func terminalXListenerRequested(args []string) (bool, error) {
+	hasTerminalXArgument := slices.ContainsFunc(args, func(value string) bool {
+		return strings.HasPrefix(value, "--terminalx-toolbox-listener-fd=")
+	})
+	if !hasTerminalXArgument {
+		return false, nil
+	}
+	if len(args) != 1 || args[0] != terminalXToolboxListenerArgument {
+		return false, errors.New("TerminalX toolbox listener argument must be exact and exclusive")
+	}
+	return true, nil
+}
+
+func disableProcessDumpability() error {
+	// The listener pathname lives below a root:root 0700 directory, so uid
+	// terminalx cannot connect by name. PR_SET_DUMPABLE=0 additionally denies a
+	// same-uid shell access to /proc/<daemon-pid>/{fd,environ}, preventing it
+	// from reopening the inherited listening descriptor through procfs.
+	return unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
+}
+
+func adoptTerminalXToolboxListener(
+	fd int,
+	expectedPath string,
+	disableDumpability func() error,
+) (net.Listener, error) {
+	if fd < 0 || expectedPath == "" || disableDumpability == nil {
+		return nil, errors.New("TerminalX toolbox listener contract is invalid")
+	}
+	if err := disableDumpability(); err != nil {
+		return nil, fmt.Errorf("disable process dumpability: %w", err)
+	}
+	if accepting, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN); err != nil || accepting != 1 {
+		return nil, errors.New("TerminalX toolbox descriptor is not a listening socket")
+	}
+	address, err := unix.Getsockname(fd)
+	if err != nil {
+		return nil, fmt.Errorf("inspect TerminalX toolbox listener: %w", err)
+	}
+	unixAddress, ok := address.(*unix.SockaddrUnix)
+	if !ok || unixAddress.Name != expectedPath {
+		return nil, errors.New("TerminalX toolbox listener address does not match")
+	}
+
+	file := os.NewFile(uintptr(fd), "terminalx-toolbox-listener")
+	if file == nil {
+		return nil, errors.New("TerminalX toolbox listener descriptor is unavailable")
+	}
+	listener, err := net.FileListener(file)
+	_ = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("adopt TerminalX toolbox listener: %w", err)
+	}
+	if listener.Addr().Network() != "unix" || listener.Addr().String() != expectedPath {
+		_ = listener.Close()
+		return nil, errors.New("adopted TerminalX toolbox listener address does not match")
+	}
+	return listener, nil
 }

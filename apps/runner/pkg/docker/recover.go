@@ -13,6 +13,9 @@ import (
 )
 
 func (d *DockerClient) RecoverSandbox(ctx context.Context, sandboxId string, recoverDto dto.RecoverSandboxDTO) error {
+	if d.terminalXHardened {
+		return fmt.Errorf("terminalx hardened sandbox recovery cannot change its resource boundary")
+	}
 	// Deduce recovery type from error reason, falling back to backup error reason
 	recoveryType := common.DeduceRecoveryType(recoverDto.ErrorReason)
 	if recoveryType == models.UnknownRecoveryType {
