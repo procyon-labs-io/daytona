@@ -4,6 +4,8 @@
 package middlewares
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"strings"
 
@@ -38,6 +40,7 @@ func StartToken(ctx *gin.Context) string {
 }
 
 func AuthMiddleware(apiToken string) gin.HandlerFunc {
+	expectedDigest := sha256.Sum256([]byte(apiToken))
 	return func(ctx *gin.Context) {
 		authHeader := ctx.GetHeader(constants.DAYTONA_AUTHORIZATION_HEADER)
 		if authHeader == "" {
@@ -67,7 +70,8 @@ func AuthMiddleware(apiToken string) gin.HandlerFunc {
 
 		token := parts[1]
 
-		if token != apiToken {
+		actualDigest := sha256.Sum256([]byte(token))
+		if subtle.ConstantTimeCompare(actualDigest[:], expectedDigest[:]) != 1 {
 			ctx.Error(common_errors.NewUnauthorizedError(errors.New("invalid token")))
 			ctx.Abort()
 			return

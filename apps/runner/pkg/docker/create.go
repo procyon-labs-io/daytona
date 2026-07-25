@@ -85,6 +85,16 @@ func (d *DockerClient) Create(ctx context.Context, sandboxDto dto.CreateSandboxD
 			if err := d.enforceTerminalXNetworkPolicy(ctx, c); err != nil {
 				return "", "", err
 			}
+			if c.State == nil || !c.State.Running {
+				c, err = d.waitForContainerRunning(ctx, sandboxDto.Id)
+				if err != nil {
+					return "", "", err
+				}
+			}
+			if err := d.requireTerminalXProvisionalReady(c); err != nil {
+				return "", "", err
+			}
+			return sandboxDto.Id, "", nil
 		}
 
 		// Re-assert link-network wiring on retries so idempotent creates still end

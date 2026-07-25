@@ -21,50 +21,71 @@ import (
 )
 
 var terminalXSha256ImageID = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-var terminalXSnapshotRef = regexp.MustCompile(`^[^\x00-\x20\x7f]{1,300}$`)
+var terminalXSha256Raw = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var terminalXContainerID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var terminalXSnapshotRef = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,446}@sha256:[0-9a-f]{64}$`)
 
 type terminalXRunnerRequirements struct {
-	imageID                     string
-	snapshotRef                 string
-	resourceLimitsDisabled      bool
-	useSnapshotEntrypoint       bool
-	interSandboxNetworkEnabled  bool
-	containerNetwork            string
-	containerRuntime            string
-	defaultRuntime              string
-	cgroupVersion               string
-	gpuEnabled                  bool
-	mountKvm                    bool
-	initializeDaemonTelemetry   bool
-	networkEnforcementAvailable bool
-	storageDriver               string
-	backingFilesystem           string
-	securityOptions             []string
-	expectedDockerServerVersion string
-	actualDockerServerVersion   string
-	expectedContainerdCommit    string
-	actualContainerdCommit      string
-	expectedRuncCommit          string
-	actualRuncCommit            string
-	memoryLimitAvailable        bool
-	swapLimitAvailable          bool
-	cpuQuotaAvailable           bool
-	pidsLimitAvailable          bool
-	oomKillAvailable            bool
-	liveRestoreEnabled          bool
+	imageID                          string
+	snapshotRef                      string
+	resourceLimitsDisabled           bool
+	useSnapshotEntrypoint            bool
+	interSandboxNetworkEnabled       bool
+	containerNetwork                 string
+	containerRuntime                 string
+	defaultRuntime                   string
+	cgroupVersion                    string
+	gpuEnabled                       bool
+	mountKvm                         bool
+	initializeDaemonTelemetry        bool
+	networkEnforcementAvailable      bool
+	storageDriver                    string
+	backingFilesystem                string
+	securityOptions                  []string
+	expectedDockerServerVersion      string
+	actualDockerServerVersion        string
+	expectedContainerdCommit         string
+	actualContainerdCommit           string
+	expectedRuncCommit               string
+	actualRuncCommit                 string
+	memoryLimitAvailable             bool
+	swapLimitAvailable               bool
+	cpuQuotaAvailable                bool
+	pidsLimitAvailable               bool
+	oomKillAvailable                 bool
+	liveRestoreEnabled               bool
+	supervisorRelaySHA256            string
+	assignmentBootstrapSHA256        string
+	nodeSHA256                       string
+	deploymentBindingInstallerSHA256 string
+	isolationProbeSHA256             string
 }
 
 const (
-	terminalXHardenedProfileLabel         = "io.terminalx.sandbox.profile"
-	terminalXHardenedProfileVersion       = "v1"
-	terminalXHardenedEntrypoint           = "/usr/local/bin/terminalx-sandbox-init"
-	terminalXSandboxUser                  = "terminalx"
-	terminalXSandboxPidsLimit       int64 = 256
-	terminalXSandboxMaxCPU          int64 = 64
-	terminalXSandboxMaxMemoryGiB    int64 = 512
-	terminalXSandboxMaxDiskGiB      int64 = 4096
-	terminalXNetworkProfileLabel          = "io.terminalx.runner-network"
-	terminalXSandboxShmSize         int64 = 64 * 1024 * 1024
+	terminalXHardenedProfileLabel                        = "io.terminalx.sandbox.profile"
+	terminalXHardenedProfileVersion                      = "v1"
+	terminalXHardenedHostname                            = "terminalx-sandbox"
+	terminalXHardenedEntrypoint                          = "/usr/local/bin/terminalx-sandbox-init"
+	terminalXSandboxUser                                 = "terminalx"
+	terminalXSandboxPidsLimit                      int64 = 256
+	terminalXSandboxMaxCPU                         int64 = 64
+	terminalXSandboxMaxMemoryGiB                   int64 = 512
+	terminalXSandboxMaxDiskGiB                     int64 = 4096
+	terminalXNetworkProfileLabel                         = "io.terminalx.runner-network"
+	terminalXSandboxShmSize                        int64 = 64 * 1024 * 1024
+	terminalXSupervisorRelayPath                         = "/usr/local/libexec/terminalx/terminalx-supervisor-relay"
+	terminalXSupervisorRelayDigestLabel                  = "io.terminalx.supervisor-relay.sha256"
+	terminalXAssignmentBootstrapPath                     = "/usr/local/libexec/terminalx/terminalx-assignment-bootstrap"
+	terminalXAssignmentBootstrapDigestLabel              = "io.terminalx.assignment-bootstrap.sha256"
+	terminalXNodePath                                    = "/usr/local/bin/node"
+	terminalXNodeDigestLabel                             = "io.terminalx.node.sha256"
+	terminalXDeploymentBindingInstallerPath              = "/usr/local/libexec/terminalx/terminalx-deployment-binding-install"
+	terminalXDeploymentBindingInstallerDigestLabel       = "io.terminalx.deployment-binding-installer.sha256"
+	terminalXIsolationProbePath                          = "/usr/local/libexec/terminalx/terminalx-isolation-probe"
+	terminalXIsolationProbeDigestLabel                   = "io.terminalx.isolation-probe.sha256"
+	terminalXSandboxArtifactDigestLabel                  = "terminalx.artifact"
+	terminalXSandboxRevisionLabel                        = "terminalx.revision"
+	terminalXSandboxPlanDigestLabel                      = "terminalx.plan"
 )
 
 var terminalXMaskedPaths = []string{
@@ -95,6 +116,9 @@ var terminalXReadonlyPaths = []string{
 // unchanged, but a dedicated hardened runner is intentionally unable to host
 // general-purpose Daytona Sandboxes.
 func validateTerminalXCreateRequest(sandboxDto dto.CreateSandboxDTO) error {
+	if !terminalXProviderSandboxUUID.MatchString(sandboxDto.Id) {
+		return fmt.Errorf("terminalx hardened sandbox identity must be a lowercase UUIDv4")
+	}
 	if sandboxDto.OsUser != terminalXSandboxUser {
 		return fmt.Errorf("terminalx hardened sandbox requires the pinned non-root user")
 	}
@@ -133,6 +157,9 @@ func validateTerminalXCreateRequest(sandboxDto dto.CreateSandboxDTO) error {
 		sandboxDto.MemoryQuota < 1 || sandboxDto.MemoryQuota > terminalXSandboxMaxMemoryGiB ||
 		sandboxDto.StorageQuota < 1 || sandboxDto.StorageQuota > terminalXSandboxMaxDiskGiB {
 		return fmt.Errorf("terminalx hardened sandbox requires finite resources")
+	}
+	if _, _, _, ok := terminalXCreateBindingFromMetadata(sandboxDto.Metadata); !ok {
+		return fmt.Errorf("terminalx hardened sandbox requires an exact immutable logical binding")
 	}
 	return nil
 }
@@ -214,6 +241,19 @@ func validateTerminalXRunnerRequirements(input terminalXRunnerRequirements) erro
 	if input.liveRestoreEnabled {
 		return fmt.Errorf("terminalx hardened runner does not permit live-restore")
 	}
+	if !terminalXSha256Raw.MatchString(input.supervisorRelaySHA256) {
+		return fmt.Errorf("terminalx hardened runner requires the pinned supervisor relay")
+	}
+	if !terminalXSha256Raw.MatchString(input.assignmentBootstrapSHA256) {
+		return fmt.Errorf("terminalx hardened runner requires the pinned assignment bootstrap")
+	}
+	if !terminalXSha256Raw.MatchString(input.nodeSHA256) {
+		return fmt.Errorf("terminalx hardened runner requires the pinned node interpreter")
+	}
+	if !terminalXSha256Raw.MatchString(input.deploymentBindingInstallerSHA256) ||
+		!terminalXSha256Raw.MatchString(input.isolationProbeSHA256) {
+		return fmt.Errorf("terminalx hardened runner requires pinned evidence helpers")
+	}
 	return nil
 }
 
@@ -253,6 +293,57 @@ func validateTerminalXImage(inspected *image.InspectResponse, expectedImageID st
 		return fmt.Errorf("terminalx hardened sandbox init must start with supervisor privileges")
 	}
 	return nil
+}
+
+func validateTerminalXSupervisorRelayLabel(labels map[string]string, expectedSHA256 string) error {
+	if !terminalXSha256Raw.MatchString(expectedSHA256) || labels[terminalXSupervisorRelayDigestLabel] != expectedSHA256 {
+		return fmt.Errorf("terminalx hardened supervisor relay digest does not match")
+	}
+	return nil
+}
+
+func validateTerminalXAssignmentBootstrapLabel(labels map[string]string, expectedSHA256 string) error {
+	if !terminalXSha256Raw.MatchString(expectedSHA256) || labels[terminalXAssignmentBootstrapDigestLabel] != expectedSHA256 {
+		return fmt.Errorf("terminalx hardened assignment bootstrap digest does not match")
+	}
+	return nil
+}
+
+func validateTerminalXNodeLabel(labels map[string]string, expectedSHA256 string) error {
+	if !terminalXSha256Raw.MatchString(expectedSHA256) || labels[terminalXNodeDigestLabel] != expectedSHA256 {
+		return fmt.Errorf("terminalx hardened node interpreter digest does not match")
+	}
+	return nil
+}
+
+func validateTerminalXEvidenceHelperLabels(labels map[string]string, installerSHA256 string, probeSHA256 string) error {
+	if !terminalXSha256Raw.MatchString(installerSHA256) ||
+		labels[terminalXDeploymentBindingInstallerDigestLabel] != installerSHA256 ||
+		!terminalXSha256Raw.MatchString(probeSHA256) ||
+		labels[terminalXIsolationProbeDigestLabel] != probeSHA256 {
+		return fmt.Errorf("terminalx hardened evidence helper digests do not match")
+	}
+	return nil
+}
+
+func (d *DockerClient) validateTerminalXImageArtifact(inspected *image.InspectResponse) error {
+	if err := validateTerminalXImage(inspected, d.terminalXSandboxImageID); err != nil {
+		return err
+	}
+	if err := validateTerminalXSupervisorRelayLabel(inspected.Config.Labels, d.terminalXSupervisorRelaySHA256); err != nil {
+		return err
+	}
+	if err := validateTerminalXAssignmentBootstrapLabel(inspected.Config.Labels, d.terminalXAssignmentBootstrapSHA256); err != nil {
+		return err
+	}
+	if err := validateTerminalXNodeLabel(inspected.Config.Labels, d.terminalXNodeSHA256); err != nil {
+		return err
+	}
+	return validateTerminalXEvidenceHelperLabels(
+		inspected.Config.Labels,
+		d.terminalXDeploymentBindingInstallerSHA256,
+		d.terminalXIsolationProbeSHA256,
+	)
 }
 
 func (d *DockerClient) terminalXHostConfig(sandboxDto dto.CreateSandboxDTO, volumeMountPathBinds []string, gpuIndex *int) (*container.HostConfig, error) {
@@ -314,7 +405,16 @@ func (d *DockerClient) requireTerminalXContainer(containerInfo *container.Inspec
 		return fmt.Errorf("terminalx hardened sandbox inspection is unavailable")
 	}
 	if containerInfo.Image != d.terminalXSandboxImageID ||
+		!terminalXContainerID.MatchString(containerInfo.ID) ||
 		containerInfo.Config.Labels[terminalXHardenedProfileLabel] != terminalXHardenedProfileVersion ||
+		containerInfo.Config.Labels[terminalXSupervisorRelayDigestLabel] != d.terminalXSupervisorRelaySHA256 ||
+		containerInfo.Config.Labels[terminalXAssignmentBootstrapDigestLabel] != d.terminalXAssignmentBootstrapSHA256 ||
+		containerInfo.Config.Labels[terminalXNodeDigestLabel] != d.terminalXNodeSHA256 ||
+		containerInfo.Config.Labels[terminalXDeploymentBindingInstallerDigestLabel] != d.terminalXDeploymentBindingInstallerSHA256 ||
+		containerInfo.Config.Labels[terminalXIsolationProbeDigestLabel] != d.terminalXIsolationProbeSHA256 ||
+		containerInfo.Config.Labels[terminalXSandboxArtifactDigestLabel] != d.terminalXSandboxArtifactDigest ||
+		!validTerminalXSandboxRevision(containerInfo.Config.Labels[terminalXSandboxRevisionLabel]) ||
+		!terminalXSha256Raw.MatchString(containerInfo.Config.Labels[terminalXSandboxPlanDigestLabel]) ||
 		len(containerInfo.Config.Entrypoint) != 1 ||
 		containerInfo.Config.Entrypoint[0] != terminalXHardenedEntrypoint ||
 		len(containerInfo.Config.Volumes) != 0 ||
@@ -400,23 +500,61 @@ func terminalXFiniteResourcesMatch(host *container.HostConfig) bool {
 		storage == strconv.FormatInt(diskGiB, 10)+"G"
 }
 
-func validTerminalXContainerEnvironment(values []string, hostname string, imageID string) bool {
-	if hostname == "" || len(values) != 3 {
-		return false
+func terminalXProviderSandboxIDFromEnvironment(values []string, imageID string) (string, bool) {
+	if len(values) != 3 {
+		return "", false
 	}
-	want := map[string]string{
-		"DAYTONA_SANDBOX_ID":       hostname,
-		"DAYTONA_SANDBOX_SNAPSHOT": imageID,
-		"DAYTONA_SANDBOX_USER":     terminalXSandboxUser,
-	}
+	environment := make(map[string]string, len(values))
 	for _, value := range values {
 		key, actual, ok := strings.Cut(value, "=")
-		if !ok || want[key] != actual {
-			return false
+		if !ok {
+			return "", false
 		}
-		delete(want, key)
+		switch key {
+		case "DAYTONA_SANDBOX_ID", "DAYTONA_SANDBOX_SNAPSHOT", "DAYTONA_SANDBOX_USER":
+		default:
+			return "", false
+		}
+		if _, duplicate := environment[key]; duplicate {
+			return "", false
+		}
+		environment[key] = actual
 	}
-	return len(want) == 0
+	providerSandboxID := environment["DAYTONA_SANDBOX_ID"]
+	if !terminalXProviderSandboxUUID.MatchString(providerSandboxID) ||
+		environment["DAYTONA_SANDBOX_SNAPSHOT"] != imageID ||
+		environment["DAYTONA_SANDBOX_USER"] != terminalXSandboxUser {
+		return "", false
+	}
+	return providerSandboxID, true
+}
+
+func validTerminalXContainerEnvironment(values []string, hostname string, imageID string) bool {
+	if hostname != terminalXHardenedHostname {
+		return false
+	}
+	_, ok := terminalXProviderSandboxIDFromEnvironment(values, imageID)
+	return ok
+}
+
+func terminalXCreateBindingFromMetadata(metadata map[string]string) (artifactDigest string, revision string, planDigest string, ok bool) {
+	if len(metadata) != 3 {
+		return "", "", "", false
+	}
+	artifactDigest = metadata[terminalXSandboxArtifactDigestLabel]
+	revision = metadata[terminalXSandboxRevisionLabel]
+	planDigest = metadata[terminalXSandboxPlanDigestLabel]
+	if !terminalXSha256Raw.MatchString(artifactDigest) || !validTerminalXSandboxRevision(revision) ||
+		!terminalXSha256Raw.MatchString(planDigest) {
+		return "", "", "", false
+	}
+	return artifactDigest, revision, planDigest, true
+}
+
+func validTerminalXSandboxRevision(value string) bool {
+	revision, err := strconv.ParseUint(value, 10, 53)
+	return err == nil && revision >= 1 && revision <= terminalXJavaScriptMaximumSafeInteger &&
+		value == strconv.FormatUint(revision, 10)
 }
 
 func sameTerminalXCapabilities(values []string) bool {
@@ -468,7 +606,7 @@ func (d *DockerClient) reconcileTerminalXContainers(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("terminalx hardened sandbox image is not preloaded: %w", err)
 	}
-	if err := validateTerminalXImage(&preloaded, d.terminalXSandboxImageID); err != nil {
+	if err := d.validateTerminalXImageArtifact(&preloaded); err != nil {
 		return err
 	}
 	containers, err := d.apiClient.ContainerList(ctx, container.ListOptions{All: true})

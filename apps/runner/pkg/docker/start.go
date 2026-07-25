@@ -43,6 +43,12 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	}
 
 	if c.State.Running {
+		if d.terminalXHardened {
+			if err := d.requireTerminalXProvisionalReady(c); err != nil {
+				return nil, "", err
+			}
+			return c, "", nil
+		}
 		containerIP := GetContainerIpAddress(ctx, c)
 		if containerIP == "" {
 			return nil, "", errors.New("sandbox IP not found? Is the sandbox started?")
@@ -83,6 +89,12 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	runningContainer, err := d.waitForContainerRunning(ctx, containerId)
 	if err != nil {
 		return nil, "", err
+	}
+	if d.terminalXHardened {
+		if err := d.requireTerminalXProvisionalReady(runningContainer); err != nil {
+			return nil, "", err
+		}
+		return runningContainer, "", nil
 	}
 
 	containerIP := GetContainerIpAddress(ctx, runningContainer)
@@ -137,6 +149,13 @@ func (d *DockerClient) Start(ctx context.Context, containerId string, authToken 
 	}
 
 	return runningContainer, daemonVersion, nil
+}
+
+func (d *DockerClient) requireTerminalXProvisionalReady(inspected *container.InspectResponse) error {
+	if !d.terminalXHardened || inspected == nil || inspected.State == nil || !inspected.State.Running {
+		return errors.New("terminalx hardened sandbox is not provisionally running")
+	}
+	return d.requireTerminalXContainer(inspected)
 }
 
 func (d *DockerClient) waitForContainerRunning(ctx context.Context, containerId string) (*container.InspectResponse, error) {

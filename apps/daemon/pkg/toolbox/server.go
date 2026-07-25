@@ -71,6 +71,10 @@ type ServerConfig struct {
 	RegionId              *string
 	Snapshot              *string
 	EntrypointLogFilePath string
+	// Listener is supplied only by the hardened TerminalX init. When present,
+	// Start serves this inherited root-created Unix listener and never opens the
+	// ambient TCP toolbox port.
+	Listener net.Listener
 }
 
 func NewServer(config ServerConfig) *server {
@@ -87,6 +91,8 @@ func NewServer(config ServerConfig) *server {
 		regionId:              config.RegionId,
 		snapshot:              config.Snapshot,
 		entrypointLogFilePath: config.EntrypointLogFilePath,
+		listener:              config.Listener,
+		hardened:              config.Listener != nil,
 	}
 }
 
@@ -109,6 +115,8 @@ type server struct {
 	snapshot              *string
 	ctx                   context.Context
 	cancel                context.CancelFunc
+	listener              net.Listener
+	hardened              bool
 }
 
 type Telemetry struct {
@@ -158,231 +166,245 @@ func (s *server) Start() error {
 	noTelemetryRouter.Use(errMiddleware)
 	binding.Validator = new(DefaultValidator)
 
-	// Add swagger UI in development mode
-	if os.Getenv("ENVIRONMENT") != "production" {
-		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
-	}
+	if s.hardened {
+		// The inherited listener is private control-plane plumbing, not the
+		// general Daytona toolbox. Expose only the four native PTY routes
+		// consumed by TerminalX's fixed root supervisor driver.
+		ptyController := pty.NewTerminalXPTYController(s.logger, s.WorkDir)
+		ptyGroup := r.Group("/process/pty")
+		ptyGroup.POST("", ptyController.CreatePTYSession)
+		ptyGroup.DELETE("/:sessionId", ptyController.DeletePTYSession)
+		ptyGroup.GET("/:sessionId/connect", ptyController.ConnectPTYSession)
+		ptyGroup.POST("/:sessionId/resize", ptyController.ResizePTYSession)
+	} else {
+		r.GET("/version", s.GetVersion)
+		// Add swagger UI in development mode.
+		if os.Getenv("ENVIRONMENT") != "production" {
+			r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+		}
 
-	r.POST("/init", s.Initialize(otelServiceName, s.entrypointLogFilePath, s.organizationId, s.regionId, s.snapshot))
+		r.POST("/init", s.Initialize(otelServiceName, s.entrypointLogFilePath, s.organizationId, s.regionId, s.snapshot))
 
-	r.GET("/version", s.GetVersion)
+		// keep /project-dir old behavior for backward compatibility
+		r.GET("/project-dir", s.GetUserHomeDir)
+		r.GET("/user-home-dir", s.GetUserHomeDir)
+		r.GET("/work-dir", s.GetWorkDir)
 
-	// keep /project-dir old behavior for backward compatibility
-	r.GET("/project-dir", s.GetUserHomeDir)
-	r.GET("/user-home-dir", s.GetUserHomeDir)
-	r.GET("/work-dir", s.GetWorkDir)
-
-	fsController := r.Group("/files")
-	{
-		// read operations
-		fsController.GET("/", fs.ListFiles)
-		fsController.GET("", fs.ListFiles)
-		fsController.GET("/download", fs.DownloadFile)
-		fsController.POST("/bulk-download", fs.DownloadFiles)
-		fsController.GET("/find", fs.FindInFiles)
-		fsController.GET("/info", fs.GetFileInfo)
-		fsController.GET("/search", fs.SearchFiles)
-
-		// create/modify operations
-		fsController.POST("/folder", fs.CreateFolder)
-		fsController.POST("/move", fs.MoveFile)
-		fsController.POST("/permissions", fs.SetFilePermissions)
-		fsController.POST("/replace", fs.ReplaceInFiles)
-		fsController.POST("/upload", fs.UploadFile)
-		fsController.POST("/bulk-upload", fs.UploadFiles)
-
-		// delete operations
-		fsController.DELETE("/", fs.DeleteFile)
-		fsController.DELETE("", fs.DeleteFile)
-	}
-
-	processLogger := s.logger.With(slog.String("component", "process_controller"))
-	processController := r.Group("/process")
-	{
-		processController.POST("/execute", process.ExecuteCommand(processLogger))
-		processController.POST("/code-run", coderun.CodeRun(processLogger))
-
-		sessionController := session.NewSessionController(s.logger, s.configDir, s.sessionService)
-		sessionGroup := processController.Group("/session")
+		fsController := r.Group("/files")
 		{
-			sessionGroup.GET("", sessionController.ListSessions)
-			sessionGroup.POST("", sessionController.CreateSession)
-			sessionGroup.GET("/entrypoint", sessionController.GetEntrypointSession)
-			sessionGroup.GET("/entrypoint/logs", sessionController.GetEntrypointLogs)
-			sessionGroup.POST("/:sessionId/exec", sessionController.SessionExecuteCommand)
-			sessionGroup.GET("/:sessionId", sessionController.GetSession)
-			sessionGroup.DELETE("/:sessionId", sessionController.DeleteSession)
-			sessionGroup.GET("/:sessionId/command/:commandId", sessionController.GetSessionCommand)
-			sessionGroup.POST("/:sessionId/command/:commandId/input", sessionController.SendInput)
-			sessionGroup.GET("/:sessionId/command/:commandId/logs", sessionController.GetSessionCommandLogs)
+			// read operations
+			fsController.GET("/", fs.ListFiles)
+			fsController.GET("", fs.ListFiles)
+			fsController.GET("/download", fs.DownloadFile)
+			fsController.POST("/bulk-download", fs.DownloadFiles)
+			fsController.GET("/find", fs.FindInFiles)
+			fsController.GET("/info", fs.GetFileInfo)
+			fsController.GET("/search", fs.SearchFiles)
+
+			// create/modify operations
+			fsController.POST("/folder", fs.CreateFolder)
+			fsController.POST("/move", fs.MoveFile)
+			fsController.POST("/permissions", fs.SetFilePermissions)
+			fsController.POST("/replace", fs.ReplaceInFiles)
+			fsController.POST("/upload", fs.UploadFile)
+			fsController.POST("/bulk-upload", fs.UploadFiles)
+
+			// delete operations
+			fsController.DELETE("/", fs.DeleteFile)
+			fsController.DELETE("", fs.DeleteFile)
 		}
 
-		// PTY endpoints
-		ptyController := pty.NewPTYController(s.logger, s.WorkDir)
-		ptyGroup := processController.Group("/pty")
+		processLogger := s.logger.With(slog.String("component", "process_controller"))
+		processController := r.Group("/process")
 		{
-			ptyGroup.GET("", ptyController.ListPTYSessions)
-			ptyGroup.POST("", ptyController.CreatePTYSession)
-			ptyGroup.GET("/:sessionId", ptyController.GetPTYSession)
-			ptyGroup.DELETE("/:sessionId", ptyController.DeletePTYSession)
-			ptyGroup.GET("/:sessionId/connect", ptyController.ConnectPTYSession)
-			ptyGroup.POST("/:sessionId/resize", ptyController.ResizePTYSession)
+			processController.POST("/execute", process.ExecuteCommand(processLogger))
+			processController.POST("/code-run", coderun.CodeRun(processLogger))
+
+			sessionController := session.NewSessionController(s.logger, s.configDir, s.sessionService)
+			sessionGroup := processController.Group("/session")
+			{
+				sessionGroup.GET("", sessionController.ListSessions)
+				sessionGroup.POST("", sessionController.CreateSession)
+				sessionGroup.GET("/entrypoint", sessionController.GetEntrypointSession)
+				sessionGroup.GET("/entrypoint/logs", sessionController.GetEntrypointLogs)
+				sessionGroup.POST("/:sessionId/exec", sessionController.SessionExecuteCommand)
+				sessionGroup.GET("/:sessionId", sessionController.GetSession)
+				sessionGroup.DELETE("/:sessionId", sessionController.DeleteSession)
+				sessionGroup.GET("/:sessionId/command/:commandId", sessionController.GetSessionCommand)
+				sessionGroup.POST("/:sessionId/command/:commandId/input", sessionController.SendInput)
+				sessionGroup.GET("/:sessionId/command/:commandId/logs", sessionController.GetSessionCommandLogs)
+			}
+
+			// PTY endpoints
+			ptyController := pty.NewPTYController(s.logger, s.WorkDir)
+			ptyGroup := processController.Group("/pty")
+			{
+				ptyGroup.GET("", ptyController.ListPTYSessions)
+				ptyGroup.POST("", ptyController.CreatePTYSession)
+				ptyGroup.GET("/:sessionId", ptyController.GetPTYSession)
+				ptyGroup.DELETE("/:sessionId", ptyController.DeletePTYSession)
+				ptyGroup.GET("/:sessionId/connect", ptyController.ConnectPTYSession)
+				ptyGroup.POST("/:sessionId/resize", ptyController.ResizePTYSession)
+			}
+
+			// Interpreter endpoints
+			interpreterController := interpreter.NewInterpreterController(s.logger, s.WorkDir)
+			interpreterGroup := processController.Group("/interpreter")
+			{
+				interpreterGroup.POST("/context", interpreterController.CreateContext)
+				interpreterGroup.GET("/context", interpreterController.ListContexts)
+				interpreterGroup.DELETE("/context/:id", interpreterController.DeleteContext)
+				interpreterGroup.GET("/execute", interpreterController.Execute)
+			}
 		}
 
-		// Interpreter endpoints
-		interpreterController := interpreter.NewInterpreterController(s.logger, s.WorkDir)
-		interpreterGroup := processController.Group("/interpreter")
+		gitController := r.Group("/git")
 		{
-			interpreterGroup.POST("/context", interpreterController.CreateContext)
-			interpreterGroup.GET("/context", interpreterController.ListContexts)
-			interpreterGroup.DELETE("/context/:id", interpreterController.DeleteContext)
-			interpreterGroup.GET("/execute", interpreterController.Execute)
-		}
-	}
+			gitController.GET("/branches", git.ListBranches)
+			gitController.GET("/history", git.GetCommitHistory)
+			gitController.GET("/status", git.GetStatus)
 
-	gitController := r.Group("/git")
-	{
-		gitController.GET("/branches", git.ListBranches)
-		gitController.GET("/history", git.GetCommitHistory)
-		gitController.GET("/status", git.GetStatus)
-
-		gitController.POST("/add", git.AddFiles)
-		gitController.POST("/branches", git.CreateBranch)
-		gitController.POST("/checkout", git.CheckoutBranch)
-		gitController.DELETE("/branches", git.DeleteBranch)
-		gitController.POST("/clone", git.CloneRepository)
-		gitController.POST("/commit", git.CommitChanges)
-		gitController.POST("/pull", git.PullChanges)
-		gitController.POST("/push", git.PushChanges)
-	}
-
-	lspLogger := s.logger.With(slog.String("component", "lsp_service"))
-	lspController := r.Group("/lsp")
-	{
-		//	server process
-		lspController.POST("/start", lsp.Start(lspLogger))
-		lspController.POST("/stop", lsp.Stop(lspLogger))
-
-		//	lsp operations
-		lspController.POST("/completions", lsp.Completions(lspLogger))
-		lspController.POST("/did-open", lsp.DidOpen(lspLogger))
-		lspController.POST("/did-close", lsp.DidClose(lspLogger))
-
-		lspController.GET("/document-symbols", lsp.DocumentSymbols(lspLogger))
-		lspController.GET("/workspacesymbols", lsp.WorkspaceSymbols(lspLogger))
-	}
-
-	lazyCU := computeruse.NewLazyComputerUse()
-	s.ComputerUse = lazyCU
-
-	go func() {
-		// Initialize plugin-based computer use lazily in a background goroutine
-		pluginPath := "/usr/local/lib/daytona-computer-use"
-		// Fallback to local config directory for development
-		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
-			pluginPath = path.Join(s.configDir, "daytona-computer-use")
+			gitController.POST("/add", git.AddFiles)
+			gitController.POST("/branches", git.CreateBranch)
+			gitController.POST("/checkout", git.CheckoutBranch)
+			gitController.DELETE("/branches", git.DeleteBranch)
+			gitController.POST("/clone", git.CloneRepository)
+			gitController.POST("/commit", git.CommitChanges)
+			gitController.POST("/pull", git.PullChanges)
+			gitController.POST("/push", git.PushChanges)
 		}
 
-		impl, err := manager.GetComputerUse(s.logger, pluginPath)
-		if err != nil {
-			s.logger.Error("Computer-Use error", "error", err)
-			s.logger.Info("Continuing without computer-use functionality...")
-			return
+		lspLogger := s.logger.With(slog.String("component", "lsp_service"))
+		lspController := r.Group("/lsp")
+		{
+			//	server process
+			lspController.POST("/start", lsp.Start(lspLogger))
+			lspController.POST("/stop", lsp.Stop(lspLogger))
+
+			//	lsp operations
+			lspController.POST("/completions", lsp.Completions(lspLogger))
+			lspController.POST("/did-open", lsp.DidOpen(lspLogger))
+			lspController.POST("/did-close", lsp.DidClose(lspLogger))
+
+			lspController.GET("/document-symbols", lsp.DocumentSymbols(lspLogger))
+			lspController.GET("/workspacesymbols", lsp.WorkspaceSymbols(lspLogger))
 		}
-		lazyCU.Set(impl)
-		s.logger.Info("Computer-use plugin loaded successfully")
-	}()
 
-	// Register computer-use endpoints with lazy check middleware
-	computerUseController := r.Group("/computeruse")
-	{
-		computerUseHandler := computeruse.Handler{
-			ComputerUse: lazyCU,
+		lazyCU := computeruse.NewLazyComputerUse()
+		s.ComputerUse = lazyCU
+
+		go func() {
+			// Initialize plugin-based computer use lazily in a background goroutine
+			pluginPath := "/usr/local/lib/daytona-computer-use"
+			// Fallback to local config directory for development
+			if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+				pluginPath = path.Join(s.configDir, "daytona-computer-use")
+			}
+
+			impl, err := manager.GetComputerUse(s.logger, pluginPath)
+			if err != nil {
+				s.logger.Error("Computer-Use error", "error", err)
+				s.logger.Info("Continuing without computer-use functionality...")
+				return
+			}
+			lazyCU.Set(impl)
+			s.logger.Info("Computer-use plugin loaded successfully")
+		}()
+
+		// Register computer-use endpoints with lazy check middleware
+		computerUseController := r.Group("/computeruse")
+		{
+			computerUseHandler := computeruse.Handler{
+				ComputerUse: lazyCU,
+			}
+
+			cuRoutes := computerUseController.Group("/", computeruse.LazyCheckMiddleware(lazyCU))
+
+			// Computer use status endpoint
+			cuRoutes.GET("/status", computeruse.WrapStatusHandler(lazyCU.GetStatus))
+
+			// Computer use management endpoints
+			cuRoutes.POST("/start", computerUseHandler.StartComputerUse)
+			cuRoutes.POST("/stop", computerUseHandler.StopComputerUse)
+			cuRoutes.GET("/process-status", computerUseHandler.GetComputerUseStatus)
+			cuRoutes.GET("/process/:processName/status", computerUseHandler.GetProcessStatus)
+			cuRoutes.POST("/process/:processName/restart", computerUseHandler.RestartProcess)
+			cuRoutes.GET("/process/:processName/logs", computerUseHandler.GetProcessLogs)
+			cuRoutes.GET("/process/:processName/errors", computerUseHandler.GetProcessErrors)
+
+			// Screenshot endpoints
+			cuRoutes.GET("/screenshot", computeruse.WrapScreenshotHandler(lazyCU.TakeScreenshot))
+			cuRoutes.GET("/screenshot/region", computeruse.WrapRegionScreenshotHandler(lazyCU.TakeRegionScreenshot))
+			cuRoutes.GET("/screenshot/compressed", computeruse.WrapCompressedScreenshotHandler(lazyCU.TakeCompressedScreenshot))
+			cuRoutes.GET("/screenshot/region/compressed", computeruse.WrapCompressedRegionScreenshotHandler(lazyCU.TakeCompressedRegionScreenshot))
+
+			// Mouse control endpoints
+			cuRoutes.GET("/mouse/position", computeruse.WrapMousePositionHandler(lazyCU.GetMousePosition))
+			cuRoutes.POST("/mouse/move", computeruse.WrapMoveMouseHandler(lazyCU.MoveMouse))
+			cuRoutes.POST("/mouse/click", computeruse.WrapClickHandler(lazyCU.Click))
+			cuRoutes.POST("/mouse/drag", computeruse.WrapDragHandler(lazyCU.Drag))
+			cuRoutes.POST("/mouse/scroll", computeruse.WrapScrollHandler(lazyCU.Scroll))
+
+			// Keyboard control endpoints
+			cuRoutes.POST("/keyboard/type", computeruse.WrapTypeTextHandler(lazyCU.TypeText))
+			cuRoutes.POST("/keyboard/key", computeruse.WrapPressKeyHandler(lazyCU.PressKey))
+			cuRoutes.POST("/keyboard/hotkey", computeruse.WrapPressHotkeyHandler(lazyCU.PressHotkey))
+
+			// Display info endpoints
+			cuRoutes.GET("/display/info", computeruse.WrapDisplayInfoHandler(lazyCU.GetDisplayInfo))
+			cuRoutes.GET("/display/windows", computeruse.WrapWindowsHandler(lazyCU.GetWindows))
+
+			// Accessibility (AT-SPI) endpoints
+			cuRoutes.GET("/a11y/tree", computeruse.WrapGetAccessibilityTreeHandler(lazyCU.GetAccessibilityTree))
+			cuRoutes.POST("/a11y/find", computeruse.WrapFindAccessibilityNodesHandler(lazyCU.FindAccessibilityNodes))
+			cuRoutes.POST("/a11y/node/focus", computeruse.WrapFocusAccessibilityNodeHandler(lazyCU.FocusAccessibilityNode))
+			cuRoutes.POST("/a11y/node/invoke", computeruse.WrapInvokeAccessibilityNodeHandler(lazyCU.InvokeAccessibilityNode))
+			cuRoutes.POST("/a11y/node/value", computeruse.WrapSetAccessibilityNodeValueHandler(lazyCU.SetAccessibilityNodeValue))
 		}
 
-		cuRoutes := computerUseController.Group("/", computeruse.LazyCheckMiddleware(lazyCU))
+		// Recording endpoints - always registered, independent of computer-use plugin
+		recordingController := recordingcontroller.NewRecordingController(s.recordingService)
+		recordingsGroup := computerUseController.Group("/recordings")
+		{
+			recordingsGroup.POST("/start", recordingController.StartRecording)
+			recordingsGroup.POST("/stop", recordingController.StopRecording)
+			recordingsGroup.GET("", recordingController.ListRecordings)
+			recordingsGroup.GET("/:id", recordingController.GetRecording)
+			recordingsGroup.GET("/:id/download", recordingController.DownloadRecording)
+			recordingsGroup.DELETE("/:id", recordingController.DeleteRecording)
+		}
 
-		// Computer use status endpoint
-		cuRoutes.GET("/status", computeruse.WrapStatusHandler(lazyCU.GetStatus))
+		portDetector := port.NewPortsDetector()
 
-		// Computer use management endpoints
-		cuRoutes.POST("/start", computerUseHandler.StartComputerUse)
-		cuRoutes.POST("/stop", computerUseHandler.StopComputerUse)
-		cuRoutes.GET("/process-status", computerUseHandler.GetComputerUseStatus)
-		cuRoutes.GET("/process/:processName/status", computerUseHandler.GetProcessStatus)
-		cuRoutes.POST("/process/:processName/restart", computerUseHandler.RestartProcess)
-		cuRoutes.GET("/process/:processName/logs", computerUseHandler.GetProcessLogs)
-		cuRoutes.GET("/process/:processName/errors", computerUseHandler.GetProcessErrors)
+		portController := r.Group("/port")
+		{
+			portController.GET("", portDetector.GetPorts)
+			portController.GET("/:port/in-use", portDetector.IsPortInUse)
+		}
 
-		// Screenshot endpoints
-		cuRoutes.GET("/screenshot", computeruse.WrapScreenshotHandler(lazyCU.TakeScreenshot))
-		cuRoutes.GET("/screenshot/region", computeruse.WrapRegionScreenshotHandler(lazyCU.TakeRegionScreenshot))
-		cuRoutes.GET("/screenshot/compressed", computeruse.WrapCompressedScreenshotHandler(lazyCU.TakeCompressedScreenshot))
-		cuRoutes.GET("/screenshot/region/compressed", computeruse.WrapCompressedRegionScreenshotHandler(lazyCU.TakeCompressedRegionScreenshot))
+		proxyController := noTelemetryRouter.Group("/proxy")
+		{
+			proxyController.Any("/:port/*path", common_proxy.NewProxyRequestHandler(proxy.GetProxyTarget, nil))
+		}
 
-		// Mouse control endpoints
-		cuRoutes.GET("/mouse/position", computeruse.WrapMousePositionHandler(lazyCU.GetMousePosition))
-		cuRoutes.POST("/mouse/move", computeruse.WrapMoveMouseHandler(lazyCU.MoveMouse))
-		cuRoutes.POST("/mouse/click", computeruse.WrapClickHandler(lazyCU.Click))
-		cuRoutes.POST("/mouse/drag", computeruse.WrapDragHandler(lazyCU.Drag))
-		cuRoutes.POST("/mouse/scroll", computeruse.WrapScrollHandler(lazyCU.Scroll))
-
-		// Keyboard control endpoints
-		cuRoutes.POST("/keyboard/type", computeruse.WrapTypeTextHandler(lazyCU.TypeText))
-		cuRoutes.POST("/keyboard/key", computeruse.WrapPressKeyHandler(lazyCU.PressKey))
-		cuRoutes.POST("/keyboard/hotkey", computeruse.WrapPressHotkeyHandler(lazyCU.PressHotkey))
-
-		// Display info endpoints
-		cuRoutes.GET("/display/info", computeruse.WrapDisplayInfoHandler(lazyCU.GetDisplayInfo))
-		cuRoutes.GET("/display/windows", computeruse.WrapWindowsHandler(lazyCU.GetWindows))
-
-		// Accessibility (AT-SPI) endpoints
-		cuRoutes.GET("/a11y/tree", computeruse.WrapGetAccessibilityTreeHandler(lazyCU.GetAccessibilityTree))
-		cuRoutes.POST("/a11y/find", computeruse.WrapFindAccessibilityNodesHandler(lazyCU.FindAccessibilityNodes))
-		cuRoutes.POST("/a11y/node/focus", computeruse.WrapFocusAccessibilityNodeHandler(lazyCU.FocusAccessibilityNode))
-		cuRoutes.POST("/a11y/node/invoke", computeruse.WrapInvokeAccessibilityNodeHandler(lazyCU.InvokeAccessibilityNode))
-		cuRoutes.POST("/a11y/node/value", computeruse.WrapSetAccessibilityNodeValueHandler(lazyCU.SetAccessibilityNodeValue))
+		go portDetector.Start(context.Background())
 	}
 
-	// Recording endpoints - always registered, independent of computer-use plugin
-	recordingController := recordingcontroller.NewRecordingController(s.recordingService)
-	recordingsGroup := computerUseController.Group("/recordings")
-	{
-		recordingsGroup.POST("/start", recordingController.StartRecording)
-		recordingsGroup.POST("/stop", recordingController.StopRecording)
-		recordingsGroup.GET("", recordingController.ListRecordings)
-		recordingsGroup.GET("/:id", recordingController.GetRecording)
-		recordingsGroup.GET("/:id/download", recordingController.DownloadRecording)
-		recordingsGroup.DELETE("/:id", recordingController.DeleteRecording)
-	}
-
-	portDetector := port.NewPortsDetector()
-
-	portController := r.Group("/port")
-	{
-		portController.GET("", portDetector.GetPorts)
-		portController.GET("/:port/in-use", portDetector.IsPortInUse)
-	}
-
-	proxyController := noTelemetryRouter.Group("/proxy")
-	{
-		proxyController.Any("/:port/*path", common_proxy.NewProxyRequestHandler(proxy.GetProxyTarget, nil))
-	}
-
-	go portDetector.Start(context.Background())
-
-	s.httpServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", config.TOOLBOX_API_PORT),
-		Handler: r,
-	}
+	s.httpServer = &http.Server{Handler: r}
 	common_proxy.ApplyServerTimeouts(s.httpServer)
 
-	// Print to stdout so the runner can know that the daemon is ready
-	fmt.Println("Starting toolbox server on port", config.TOOLBOX_API_PORT)
-
-	listener, err := net.Listen("tcp", s.httpServer.Addr)
-	if err != nil {
-		return err
+	listener := s.listener
+	if listener == nil {
+		s.httpServer.Addr = fmt.Sprintf(":%d", config.TOOLBOX_API_PORT)
+		var err error
+		listener, err = net.Listen("tcp", s.httpServer.Addr)
+		if err != nil {
+			return err
+		}
+		// Print to stdout so the runner can know that the daemon is ready.
+		fmt.Println("Starting toolbox server on port", config.TOOLBOX_API_PORT)
+	} else {
+		fmt.Println("Starting toolbox server on inherited Unix listener")
 	}
 
 	return s.httpServer.Serve(listener)

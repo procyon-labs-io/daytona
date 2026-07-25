@@ -43,6 +43,7 @@ import {
   RecoverSandboxDTO,
 } from '@daytona/runner-api-client'
 import { SnapshotStateError } from '../errors/snapshot-state-error'
+import { terminalXCreateMetadata } from './terminalx-create-metadata'
 
 /**
  * RunnerAdapterV2 implements RunnerAdapter for v2 runners.
@@ -185,7 +186,7 @@ export class RunnerAdapterV2 implements RunnerAdapter {
       networkBlockAll: sandbox.networkBlockAll,
       networkAllowList: sandbox.networkAllowList,
       domainAllowList: sandbox.domainAllowList,
-      metadata: metadata,
+      metadata: terminalXCreateMetadata(sandbox.labels, metadata),
       authToken: sandbox.authToken,
       otelEndpoint: otelEndpoint,
       skipStart: skipStart,

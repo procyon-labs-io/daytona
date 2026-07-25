@@ -28,6 +28,10 @@ type Config struct {
 	OtelTracingEnabled                 bool          `envconfig:"OTEL_TRACING_ENABLED"`
 	OtelEndpoint                       string        `envconfig:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 	OtelHeaders                        string        `envconfig:"OTEL_EXPORTER_OTLP_HEADERS"`
+	DockerHostOverride                 string        `envconfig:"DOCKER_HOST"`
+	DockerAPIVersionOverride           string        `envconfig:"DOCKER_API_VERSION"`
+	DockerCertPathOverride             string        `envconfig:"DOCKER_CERT_PATH"`
+	DockerTLSVerifyOverride            string        `envconfig:"DOCKER_TLS_VERIFY"`
 	BackupInfoCacheRetention           time.Duration `envconfig:"BACKUP_INFO_CACHE_RETENTION" default:"168h" validate:"min=5m"`
 	Environment                        string        `envconfig:"ENVIRONMENT"`
 	ContainerRuntime                   string        `envconfig:"CONTAINER_RUNTIME"`
@@ -71,12 +75,32 @@ type Config struct {
 	// TerminalX hosted Runtime.  It is deliberately opt-in so an operator must
 	// acknowledge that this runner accepts only the pinned TerminalX image and
 	// its much narrower Sandbox contract.
-	TerminalXHardened            bool   `envconfig:"TERMINALX_HARDENED" default:"false"`
-	TerminalXSandboxImageID      string `envconfig:"TERMINALX_SANDBOX_IMAGE_ID"`
-	TerminalXSandboxSnapshotRef  string `envconfig:"TERMINALX_SANDBOX_SNAPSHOT_REF"`
-	TerminalXDockerServerVersion string `envconfig:"TERMINALX_DOCKER_SERVER_VERSION"`
-	TerminalXContainerdCommit    string `envconfig:"TERMINALX_CONTAINERD_COMMIT"`
-	TerminalXRuncCommit          string `envconfig:"TERMINALX_RUNC_COMMIT"`
+	TerminalXHardened                          bool          `envconfig:"TERMINALX_HARDENED" default:"false"`
+	TerminalXSandboxImageID                    string        `envconfig:"TERMINALX_SANDBOX_IMAGE_ID"`
+	TerminalXSandboxSnapshotRef                string        `envconfig:"TERMINALX_SANDBOX_SNAPSHOT_REF"`
+	TerminalXDockerServerVersion               string        `envconfig:"TERMINALX_DOCKER_SERVER_VERSION"`
+	TerminalXContainerdCommit                  string        `envconfig:"TERMINALX_CONTAINERD_COMMIT"`
+	TerminalXRuncCommit                        string        `envconfig:"TERMINALX_RUNC_COMMIT"`
+	TerminalXSupervisorRelaySHA256             string        `envconfig:"TERMINALX_SUPERVISOR_RELAY_SHA256"`
+	TerminalXAssignmentBootstrapSHA256         string        `envconfig:"TERMINALX_ASSIGNMENT_BOOTSTRAP_SHA256"`
+	TerminalXNodeSHA256                        string        `envconfig:"TERMINALX_NODE_SHA256"`
+	TerminalXDeploymentBindingInstallerSHA256  string        `envconfig:"TERMINALX_DEPLOYMENT_BINDING_INSTALLER_SHA256"`
+	TerminalXIsolationProbeSHA256              string        `envconfig:"TERMINALX_ISOLATION_PROBE_SHA256"`
+	TerminalXSandboxArtifactDigest             string        `envconfig:"TERMINALX_SANDBOX_ARTIFACT_DIGEST"`
+	TerminalXHardenedSourceCommit              string        `envconfig:"TERMINALX_HARDENED_SOURCE_COMMIT"`
+	TerminalXSeccompProfileSHA256              string        `envconfig:"TERMINALX_SECCOMP_PROFILE_SHA256"`
+	TerminalXBootstrapAuthorityKeyID           string        `envconfig:"TERMINALX_BOOTSTRAP_AUTHORITY_KEY_ID"`
+	TerminalXBootstrapAuthorityPublicKeyFile   string        `envconfig:"TERMINALX_BOOTSTRAP_AUTHORITY_PUBLIC_KEY_FILE"`
+	TerminalXBootstrapAuthorityPublicKeySHA256 string        `envconfig:"TERMINALX_BOOTSTRAP_AUTHORITY_PUBLIC_KEY_SHA256"`
+	TerminalXDeploymentBindingKeyID            string        `envconfig:"TERMINALX_DEPLOYMENT_BINDING_KEY_ID"`
+	TerminalXDeploymentBindingPrivateKeyFile   string        `envconfig:"TERMINALX_DEPLOYMENT_BINDING_PRIVATE_KEY_FILE"`
+	TerminalXDeploymentBindingPublicKeySHA256  string        `envconfig:"TERMINALX_DEPLOYMENT_BINDING_PUBLIC_KEY_SHA256"`
+	TerminalXIsolationAttestorKeyID            string        `envconfig:"TERMINALX_ISOLATION_ATTESTOR_KEY_ID"`
+	TerminalXIsolationAttestorPrivateKeyFile   string        `envconfig:"TERMINALX_ISOLATION_ATTESTOR_PRIVATE_KEY_FILE"`
+	TerminalXIsolationAttestorPublicKeySHA256  string        `envconfig:"TERMINALX_ISOLATION_ATTESTOR_PUBLIC_KEY_SHA256"`
+	TerminalXEvidenceTTL                       time.Duration `envconfig:"TERMINALX_EVIDENCE_TTL" default:"60s" validate:"min=1s,max=5m"`
+	TerminalXDaytonaDaemonUID                  int           `envconfig:"TERMINALX_DAYTONA_DAEMON_UID" default:"10001" validate:"eq=10001"`
+	TerminalXAgentUID                          int           `envconfig:"TERMINALX_AGENT_UID" default:"10001" validate:"eq=10001"`
 }
 
 var DEFAULT_API_PORT int = 8080
@@ -151,6 +175,36 @@ func (c *Config) GetOtelHeaders() map[string]string {
 	}
 
 	return headers
+}
+
+// ValidateTerminalXProcessBoundary rejects observability and development
+// options that could disclose provider-private Sandbox identifiers outside the
+// hardened runner host. This check must run before any telemetry exporter is
+// initialized.
+func (c *Config) ValidateTerminalXProcessBoundary() error {
+	if !c.TerminalXHardened {
+		return nil
+	}
+	if c.Environment != "production" {
+		return fmt.Errorf("TerminalX hardened runner requires ENVIRONMENT=production")
+	}
+	if c.ApiLogRequests {
+		return fmt.Errorf("TerminalX hardened runner requires API_LOG_REQUESTS=false")
+	}
+	if c.OtelLoggingEnabled || c.OtelTracingEnabled ||
+		strings.TrimSpace(c.OtelEndpoint) != "" || strings.TrimSpace(c.OtelHeaders) != "" {
+		return fmt.Errorf("TerminalX hardened runner does not permit OpenTelemetry exporters")
+	}
+	if c.InitializeDaemonTelemetry {
+		return fmt.Errorf("TerminalX hardened runner requires INITIALIZE_DAEMON_TELEMETRY=false")
+	}
+	if strings.TrimSpace(c.DockerHostOverride) != "" ||
+		strings.TrimSpace(c.DockerAPIVersionOverride) != "" ||
+		strings.TrimSpace(c.DockerCertPathOverride) != "" ||
+		strings.TrimSpace(c.DockerTLSVerifyOverride) != "" {
+		return fmt.Errorf("TerminalX hardened runner does not permit Docker client environment overrides")
+	}
+	return nil
 }
 
 func GetContainerRuntime() string {

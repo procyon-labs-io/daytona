@@ -65,10 +65,14 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 		if err := validateTerminalXCreateRequest(sandboxDto); err != nil {
 			return nil, err
 		}
+		artifactDigest, _, _, _ := terminalXCreateBindingFromMetadata(sandboxDto.Metadata)
+		if artifactDigest != d.terminalXSandboxArtifactDigest {
+			return nil, fmt.Errorf("terminalx hardened sandbox artifact binding does not match")
+		}
 		if err := validateTerminalXSnapshotReference(sandboxDto, d.terminalXSandboxSnapshotRef); err != nil {
 			return nil, err
 		}
-		if err := validateTerminalXImage(image, d.terminalXSandboxImageID); err != nil {
+		if err := d.validateTerminalXImageArtifact(image); err != nil {
 			return nil, err
 		}
 	}
@@ -135,6 +139,19 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	}
 	if d.terminalXHardened {
 		labels[terminalXHardenedProfileLabel] = terminalXHardenedProfileVersion
+		labels[terminalXSupervisorRelayDigestLabel] = d.terminalXSupervisorRelaySHA256
+		labels[terminalXAssignmentBootstrapDigestLabel] = d.terminalXAssignmentBootstrapSHA256
+		labels[terminalXNodeDigestLabel] = d.terminalXNodeSHA256
+		labels[terminalXDeploymentBindingInstallerDigestLabel] = d.terminalXDeploymentBindingInstallerSHA256
+		labels[terminalXIsolationProbeDigestLabel] = d.terminalXIsolationProbeSHA256
+		artifactDigest, revision, planDigest, _ := terminalXCreateBindingFromMetadata(sandboxDto.Metadata)
+		labels[terminalXSandboxArtifactDigestLabel] = artifactDigest
+		labels[terminalXSandboxRevisionLabel] = revision
+		labels[terminalXSandboxPlanDigestLabel] = planDigest
+	}
+	hostname := sandboxDto.Id
+	if d.terminalXHardened {
+		hostname = terminalXHardenedHostname
 	}
 
 	// Android-device sandboxes run the image's native entrypoint (e.g. the docker-android
@@ -143,7 +160,7 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	if sandboxDto.IsAndroidSandbox() {
 		labels[androidDeviceLabel] = "true"
 		return &container.Config{
-			Hostname:     sandboxDto.Id,
+			Hostname:     hostname,
 			Image:        sandboxDto.Snapshot,
 			Env:          envVars,
 			Labels:       labels,
@@ -179,7 +196,7 @@ func (d *DockerClient) getContainerCreateConfig(sandboxDto dto.CreateSandboxDTO,
 	}
 
 	return &container.Config{
-		Hostname:     sandboxDto.Id,
+		Hostname:     hostname,
 		Image:        sandboxDto.Snapshot,
 		WorkingDir:   workingDir,
 		Env:          envVars,

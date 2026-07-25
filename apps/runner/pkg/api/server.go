@@ -46,37 +46,40 @@ import (
 )
 
 type ApiServerConfig struct {
-	Logger      *slog.Logger
-	ApiPort     int
-	ApiToken    string
-	TLSCertFile string
-	TLSKeyFile  string
-	EnableTLS   bool
-	LogRequests bool
+	Logger            *slog.Logger
+	ApiPort           int
+	ApiToken          string
+	TLSCertFile       string
+	TLSKeyFile        string
+	EnableTLS         bool
+	LogRequests       bool
+	TerminalXHardened bool
 }
 
 func NewApiServer(config ApiServerConfig) *ApiServer {
 	return &ApiServer{
-		logger:      config.Logger.With(slog.String("component", "server")),
-		apiPort:     config.ApiPort,
-		apiToken:    config.ApiToken,
-		tlsCertFile: config.TLSCertFile,
-		tlsKeyFile:  config.TLSKeyFile,
-		enableTLS:   config.EnableTLS,
-		logRequests: config.LogRequests,
+		logger:            config.Logger.With(slog.String("component", "server")),
+		apiPort:           config.ApiPort,
+		apiToken:          config.ApiToken,
+		tlsCertFile:       config.TLSCertFile,
+		tlsKeyFile:        config.TLSKeyFile,
+		enableTLS:         config.EnableTLS,
+		logRequests:       config.LogRequests,
+		terminalXHardened: config.TerminalXHardened,
 	}
 }
 
 type ApiServer struct {
-	logger      *slog.Logger
-	apiPort     int
-	apiToken    string
-	tlsCertFile string
-	tlsKeyFile  string
-	enableTLS   bool
-	httpServer  *http.Server
-	router      *gin.Engine
-	logRequests bool
+	logger            *slog.Logger
+	apiPort           int
+	apiToken          string
+	tlsCertFile       string
+	tlsKeyFile        string
+	enableTLS         bool
+	httpServer        *http.Server
+	router            *gin.Engine
+	logRequests       bool
+	terminalXHardened bool
 }
 
 func (a *ApiServer) Start(ctx context.Context) error {
@@ -90,81 +93,7 @@ func (a *ApiServer) Start(ctx context.Context) error {
 		return fmt.Errorf("cannot start API server, port %d is already in use", a.apiPort)
 	}
 
-	binding.Validator = new(DefaultValidator)
-
-	gin.DefaultWriter = &log.InfoLogWriter{}
-	gin.DefaultErrorWriter = &log.ErrorLogWriter{}
-
-	a.router = gin.New()
-	a.router.Use(common_errors.Recovery())
-	// This must precede request logging and telemetry: the legacy Start token is
-	// sensitive even though hardened TerminalX sandboxes never consume it.
-	a.router.Use(middlewares.RedactStartTokenQuery())
-
-	gin.SetMode(gin.ReleaseMode)
-	if config.GetEnvironment() == "development" {
-		gin.SetMode(gin.DebugMode)
-	}
-
-	if a.logRequests {
-		a.router.Use(sloggin.New(a.logger))
-	}
-	a.router.Use(otelgin.Middleware("daytona-runner"))
-	a.router.Use(common_errors.NewErrorMiddleware(common.HandlePossibleDockerError))
-	a.router.Use(middlewares.RecoverableErrorsMiddleware())
-
-	public := a.router.Group("/")
-	public.GET("", controllers.HealthCheck)
-
-	if config.GetEnvironment() == "development" {
-		public.GET("/api/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
-	}
-
-	protected := a.router.Group("/")
-	protected.Use(middlewares.AuthMiddleware(a.apiToken))
-
-	metricsController := protected.Group("/metrics")
-	{
-		metricsController.GET("", gin.WrapH(promhttp.Handler()))
-	}
-
-	infoController := protected.Group("/info")
-	{
-		infoController.GET("", controllers.RunnerInfo)
-	}
-
-	sandboxControllerLogger := a.logger.With(slog.String("component", "sandbox_controller"))
-	sandboxController := protected.Group("/sandboxes")
-	{
-		sandboxController.POST("", controllers.Create)
-		sandboxController.GET("/:sandboxId", controllers.Info)
-		sandboxController.POST("/:sandboxId/destroy", controllers.Destroy)
-		sandboxController.POST("/:sandboxId/start", controllers.Start)
-		sandboxController.POST("/:sandboxId/stop", controllers.Stop)
-		sandboxController.POST("/:sandboxId/backup", controllers.CreateBackup(sandboxControllerLogger))
-		sandboxController.POST("/:sandboxId/snapshot-from-sandbox", controllers.SnapshotFromSandbox)
-		sandboxController.POST("/:sandboxId/resize", controllers.Resize)
-		sandboxController.POST("/:sandboxId/recover", controllers.Recover)
-		sandboxController.POST("/:sandboxId/is-recoverable", controllers.IsRecoverable)
-		sandboxController.POST("/:sandboxId/network-settings", controllers.UpdateNetworkSettings)
-
-		// Add proxy endpoint within the sandbox controller for toolbox
-		// Using Any() to handle all HTTP methods for the toolbox proxy
-		sandboxController.Any("/:sandboxId/toolbox/*path", controllers.ProxyRequest(sandboxControllerLogger))
-	}
-
-	snapshotControllerLogger := a.logger.With(slog.String("component", "snapshot_controller"))
-	snapshotController := protected.Group("/snapshots")
-	{
-		snapshotController.POST("/pull", controllers.PullSnapshot(ctx, snapshotControllerLogger))
-		snapshotController.POST("/build", controllers.BuildSnapshot(ctx, snapshotControllerLogger))
-		snapshotController.POST("/tag", controllers.TagImage)
-		snapshotController.GET("/exists", controllers.SnapshotExists)
-		snapshotController.GET("/info", controllers.GetSnapshotInfo)
-		snapshotController.POST("/remove", controllers.RemoveSnapshot(snapshotControllerLogger))
-		snapshotController.GET("/logs", controllers.GetBuildLogs(snapshotControllerLogger))
-		snapshotController.POST("/inspect", controllers.InspectSnapshotInRegistry)
-	}
+	a.router = a.buildRouter(ctx, config.GetEnvironment())
 
 	a.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", a.apiPort),
@@ -189,6 +118,109 @@ func (a *ApiServer) Start(ctx context.Context) error {
 	}()
 
 	return <-errChan
+}
+
+func (a *ApiServer) buildRouter(ctx context.Context, environment string) *gin.Engine {
+	binding.Validator = new(DefaultValidator)
+
+	gin.DefaultWriter = &log.InfoLogWriter{}
+	gin.DefaultErrorWriter = &log.ErrorLogWriter{}
+
+	router := gin.New()
+	router.Use(common_errors.Recovery())
+	// This must precede request logging and telemetry: the legacy Start token is
+	// sensitive even though hardened TerminalX sandboxes never consume it.
+	router.Use(middlewares.RedactStartTokenQuery())
+
+	gin.SetMode(gin.ReleaseMode)
+	if environment == "development" && !a.terminalXHardened {
+		gin.SetMode(gin.DebugMode)
+	}
+
+	if a.logRequests {
+		router.Use(sloggin.New(a.logger))
+	}
+	if !a.terminalXHardened {
+		router.Use(otelgin.Middleware("daytona-runner"))
+	}
+	router.Use(common_errors.NewErrorMiddleware(common.HandlePossibleDockerError))
+	router.Use(middlewares.RecoverableErrorsMiddleware())
+
+	public := router.Group("/")
+	public.GET("", controllers.HealthCheck)
+
+	if environment == "development" && !a.terminalXHardened {
+		public.GET("/api/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+	}
+
+	protected := router.Group("/")
+	protected.Use(middlewares.AuthMiddleware(a.apiToken))
+
+	metricsController := protected.Group("/metrics")
+	{
+		metricsController.GET("", gin.WrapH(promhttp.Handler()))
+	}
+
+	infoController := protected.Group("/info")
+	{
+		infoController.GET("", controllers.RunnerInfo)
+	}
+
+	sandboxControllerLogger := a.logger.With(slog.String("component", "sandbox_controller"))
+	sandboxController := protected.Group("/sandboxes")
+	{
+		sandboxController.POST("", controllers.Create)
+		sandboxController.GET("/:sandboxId", controllers.Info)
+		sandboxController.POST("/:sandboxId/destroy", controllers.Destroy)
+		sandboxController.POST("/:sandboxId/start", controllers.Start)
+		sandboxController.POST("/:sandboxId/stop", controllers.Stop)
+		if a.terminalXHardened {
+			sandboxController.POST("/:sandboxId/terminalx-assignment-bootstrap", controllers.TerminalXAssignmentBootstrap)
+			sandboxController.POST("/:sandboxId/terminalx-supervisor-relay", controllers.TerminalXSupervisorRelay)
+		}
+		registerLegacySandboxRoutes(sandboxController, sandboxControllerLogger, a.terminalXHardened)
+	}
+
+	if !a.terminalXHardened {
+		snapshotControllerLogger := a.logger.With(slog.String("component", "snapshot_controller"))
+		snapshotController := protected.Group("/snapshots")
+		{
+			snapshotController.POST("/pull", controllers.PullSnapshot(ctx, snapshotControllerLogger))
+			snapshotController.POST("/build", controllers.BuildSnapshot(ctx, snapshotControllerLogger))
+			snapshotController.POST("/tag", controllers.TagImage)
+			snapshotController.GET("/exists", controllers.SnapshotExists)
+			snapshotController.GET("/info", controllers.GetSnapshotInfo)
+			snapshotController.POST("/remove", controllers.RemoveSnapshot(snapshotControllerLogger))
+			snapshotController.GET("/logs", controllers.GetBuildLogs(snapshotControllerLogger))
+			snapshotController.POST("/inspect", controllers.InspectSnapshotInRegistry)
+		}
+	}
+
+	return router
+}
+
+// registerLegacySandboxRoutes keeps compatibility effects reachable for
+// ordinary Daytona runners. The hardened profile has its own narrow lifecycle
+// and root protocol and must not expose mutation routes that it can never
+// authorize. In particular, it deliberately leaves TCP/2280 unused; exposing
+// the generic proxy would let uid 10001 bind that port and turn the runner into
+// an unaudited HTTP/WebSocket bridge around the root supervisor and Team
+// Session steering fences.
+func registerLegacySandboxRoutes(
+	sandboxController *gin.RouterGroup,
+	logger *slog.Logger,
+	terminalXHardened bool,
+) {
+	if terminalXHardened {
+		return
+	}
+	sandboxController.POST("/:sandboxId/backup", controllers.CreateBackup(logger))
+	sandboxController.POST("/:sandboxId/snapshot-from-sandbox", controllers.SnapshotFromSandbox)
+	sandboxController.POST("/:sandboxId/resize", controllers.Resize)
+	sandboxController.POST("/:sandboxId/recover", controllers.Recover)
+	sandboxController.POST("/:sandboxId/is-recoverable", controllers.IsRecoverable)
+	sandboxController.POST("/:sandboxId/network-settings", controllers.UpdateNetworkSettings)
+	sandboxController.Any("/:sandboxId/toolbox/*path", controllers.ProxyRequest(logger))
 }
 
 func (a *ApiServer) Stop() {

@@ -30,7 +30,7 @@ func (d *DockerClient) PullImage(ctx context.Context, imageName string, reg *dto
 		if err != nil {
 			return nil, fmt.Errorf("terminalx hardened sandbox image is not preloaded: %w", err)
 		}
-		if err := validateTerminalXImage(&inspected, d.terminalXSandboxImageID); err != nil {
+		if err := d.validateTerminalXImageArtifact(&inspected); err != nil {
 			return nil, err
 		}
 		return &inspected, nil

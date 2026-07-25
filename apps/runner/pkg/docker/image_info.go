@@ -32,7 +32,7 @@ func (d *DockerClient) GetImageInfo(ctx context.Context, imageName string) (*Ima
 		return nil, err
 	}
 	if d.terminalXHardened {
-		if err := validateTerminalXImage(&inspect, d.terminalXSandboxImageID); err != nil {
+		if err := d.validateTerminalXImageArtifact(&inspect); err != nil {
 			return nil, err
 		}
 	}

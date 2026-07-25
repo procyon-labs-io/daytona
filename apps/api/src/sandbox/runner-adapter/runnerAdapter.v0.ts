@@ -40,6 +40,7 @@ import { DockerRegistry } from '../../docker-registry/entities/docker-registry.e
 import { SandboxState } from '../enums/sandbox-state.enum'
 import { BackupState } from '../enums/backup-state.enum'
 import { RunnerApiError } from '../errors/runner-api-error'
+import { terminalXCreateMetadata } from './terminalx-create-metadata'
 
 const isDebugEnabled = process.env.DEBUG === 'true'
 
@@ -224,7 +225,7 @@ export class RunnerAdapterV0 implements RunnerAdapter {
       networkBlockAll: sandbox.networkBlockAll,
       networkAllowList: sandbox.networkAllowList,
       domainAllowList: sandbox.domainAllowList,
-      metadata: metadata,
+      metadata: terminalXCreateMetadata(sandbox.labels, metadata),
       authToken: sandbox.authToken,
       otelEndpoint,
       skipStart: skipStart,

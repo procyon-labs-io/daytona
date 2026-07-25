@@ -12,13 +12,28 @@ import (
 
 	"github.com/daytonaio/daemon/internal/util"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
+const terminalXPTYWorkingDirectory = "/home/terminalx"
+
 // NewPTYController creates a new PTY controller
 func NewPTYController(logger *slog.Logger, workDir string) *PTYController {
 	return &PTYController{logger: logger.With(slog.String("component", "PTY_controller")), workDir: workDir}
+}
+
+// NewTerminalXPTYController creates the fail-closed controller exposed only on
+// TerminalX's inherited private Unix listener. Unlike the general toolbox PTY
+// API, this controller accepts only the fixed sanitized, lazy-start request
+// shape emitted by the root supervisor.
+func NewTerminalXPTYController(logger *slog.Logger, workDir string) *PTYController {
+	return &PTYController{
+		logger:   logger.With(slog.String("component", "TerminalX_PTY_controller")),
+		workDir:  workDir,
+		hardened: true,
+	}
 }
 
 // CreatePTYSession godoc
@@ -40,16 +55,26 @@ func (p *PTYController) CreatePTYSession(c *gin.Context) {
 		return
 	}
 
-	// Validate session ID
+	// Validate session ID. The hardened endpoint additionally requires the
+	// canonical lowercase UUIDv4 form used by the supervisor protocol.
 	if req.ID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session ID is required"})
 		return
 	}
-
-	// Check if session with this ID already exists
-	if _, exists := ptyManager.Get(req.ID); exists {
-		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("PTY session with ID '%s' already exists", req.ID)})
+	if p.hardened && !isCanonicalUUIDv4(req.ID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session ID must be a canonical UUIDv4"})
 		return
+	}
+	if p.hardened && (!req.SanitizeEnv || !req.LazyStart) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hardened PTY requires sanitizeEnv and lazyStart"})
+		return
+	}
+	if req.SanitizeEnv {
+		if req.Cwd != terminalXPTYWorkingDirectory ||
+			len(req.Envs) != 1 || req.Envs["TERM"] != "xterm-256color" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sanitized PTY configuration is fixed"})
+			return
+		}
 	}
 
 	// Defaults
@@ -89,18 +114,23 @@ func (p *PTYController) CreatePTYSession(c *gin.Context) {
 			Active:    false,
 			LazyStart: req.LazyStart,
 		},
-		clients: cmap.New[*wsClient](),
-		logger:  p.logger.With(slog.String("sessionId", req.ID)),
+		clients:     cmap.New[*wsClient](),
+		logger:      p.logger.With(slog.String("sessionId", req.ID)),
+		sanitizeEnv: req.SanitizeEnv,
 	}
 
-	// Add to manager first to prevent race conditions
-	ptyManager.Add(session)
+	// Atomically claim the identifier. A Get followed by Set permits two
+	// concurrent creates to overwrite each other and breaks teardown fencing.
+	if !ptyManager.Add(session) {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("PTY session with ID '%s' already exists", req.ID)})
+		return
+	}
 
 	// Start PTY immediately if not lazy start (default behavior)
 	if !req.LazyStart {
 		if err := session.start(); err != nil {
 			// If start fails, remove from manager
-			ptyManager.Delete(req.ID)
+			ptyManager.DeleteExact(req.ID, session)
 			p.logger.Error("failed to start PTY at create", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start PTY session"})
 			return
@@ -167,13 +197,19 @@ func (p *PTYController) DeletePTYSession(c *gin.Context) {
 		return
 	}
 
-	if s, ok := ptyManager.Delete(id); ok {
+	if s, ok := ptyManager.Get(id); ok && ptyManager.DeleteExact(id, s) {
 		s.kill()
 		p.logger.Debug("Deleted PTY session", "sessionId", id)
 		c.JSON(http.StatusOK, gin.H{"message": "PTY session deleted"})
 		return
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "PTY session not found"})
+}
+
+func isCanonicalUUIDv4(value string) bool {
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed.Version() == uuid.Version(4) &&
+		parsed.Variant() == uuid.RFC4122 && parsed.String() == value
 }
 
 // ConnectPTYSession godoc

@@ -23,8 +23,9 @@ const (
 
 // PTYController handles PTY-related HTTP endpoints
 type PTYController struct {
-	logger  *slog.Logger
-	workDir string
+	logger   *slog.Logger
+	workDir  string
+	hardened bool
 }
 
 // PTYManager manages multiple PTY sessions
@@ -46,7 +47,8 @@ type wsClient struct {
 type PTYSession struct {
 	logger *slog.Logger
 
-	info PTYSessionInfo
+	info        PTYSessionInfo
+	sanitizeEnv bool
 
 	cmd    *exec.Cmd
 	ptmx   *os.File
@@ -61,7 +63,8 @@ type PTYSession struct {
 	inCh chan []byte
 
 	// guards general session fields (info/cmd/ptmx)
-	mu sync.Mutex
+	mu      sync.Mutex
+	closing bool
 }
 
 // PTYSessionInfo contains metadata about a PTY session
@@ -80,12 +83,13 @@ type PTYSessionInfo struct {
 
 // PTYCreateRequest represents a request to create a new PTY session
 type PTYCreateRequest struct {
-	ID        string            `json:"id"`
-	Cwd       string            `json:"cwd,omitempty"`
-	Envs      map[string]string `json:"envs,omitempty"`
-	Cols      *uint16           `json:"cols" validate:"optional"`
-	Rows      *uint16           `json:"rows" validate:"optional"`
-	LazyStart bool              `json:"lazyStart,omitempty"` // Don't start PTY until first client connects
+	ID          string            `json:"id"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Envs        map[string]string `json:"envs,omitempty"`
+	Cols        *uint16           `json:"cols" validate:"optional"`
+	Rows        *uint16           `json:"rows" validate:"optional"`
+	LazyStart   bool              `json:"lazyStart,omitempty"`   // Don't start PTY until first client connects
+	SanitizeEnv bool              `json:"sanitizeEnv,omitempty"` // Use the fixed TerminalX shell boundary.
 } //	@name	PtyCreateRequest
 
 // PTYCreateResponse represents the response when creating a PTY session

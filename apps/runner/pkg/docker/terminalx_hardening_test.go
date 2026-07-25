@@ -5,7 +5,9 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/daytonaio/runner/pkg/api/dto"
@@ -18,11 +20,19 @@ import (
 
 const testTerminalXImageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const testTerminalXSnapshotRef = "registry.example/terminalx/sandbox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+const testTerminalXSupervisorRelaySHA256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+const testTerminalXAssignmentBootstrapSHA256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+const testTerminalXNodeSHA256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+const testTerminalXDeploymentBindingInstallerSHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+const testTerminalXIsolationProbeSHA256 = "9999999999999999999999999999999999999999999999999999999999999999"
+const testTerminalXSandboxUUID = "123e4567-e89b-42d3-a456-426614174000"
+const testTerminalXSandboxArtifactDigest = "1111111111111111111111111111111111111111111111111111111111111111"
+const testTerminalXSandboxPlanDigest = "2222222222222222222222222222222222222222222222222222222222222222"
 
 func terminalXCreateRequest() dto.CreateSandboxDTO {
 	blockAll := true
 	return dto.CreateSandboxDTO{
-		Id:              "sandbox-1",
+		Id:              testTerminalXSandboxUUID,
 		UserId:          "user-1",
 		Snapshot:        testTerminalXSnapshotRef,
 		OsUser:          terminalXSandboxUser,
@@ -30,6 +40,11 @@ func terminalXCreateRequest() dto.CreateSandboxDTO {
 		MemoryQuota:     4,
 		StorageQuota:    20,
 		NetworkBlockAll: &blockAll,
+		Metadata: map[string]string{
+			terminalXSandboxArtifactDigestLabel: testTerminalXSandboxArtifactDigest,
+			terminalXSandboxRevisionLabel:       "1",
+			terminalXSandboxPlanDigestLabel:     testTerminalXSandboxPlanDigest,
+		},
 	}
 }
 
@@ -40,7 +55,12 @@ func terminalXImage() *image.InspectResponse {
 			User:       "root",
 			Entrypoint: []string{terminalXHardenedEntrypoint},
 			Labels: map[string]string{
-				terminalXHardenedProfileLabel: terminalXHardenedProfileVersion,
+				terminalXHardenedProfileLabel:                  terminalXHardenedProfileVersion,
+				terminalXSupervisorRelayDigestLabel:            testTerminalXSupervisorRelaySHA256,
+				terminalXAssignmentBootstrapDigestLabel:        testTerminalXAssignmentBootstrapSHA256,
+				terminalXNodeDigestLabel:                       testTerminalXNodeSHA256,
+				terminalXDeploymentBindingInstallerDigestLabel: testTerminalXDeploymentBindingInstallerSHA256,
+				terminalXIsolationProbeDigestLabel:             testTerminalXIsolationProbeSHA256,
 			},
 		}},
 	}
@@ -49,10 +69,16 @@ func terminalXImage() *image.InspectResponse {
 func terminalXContainerForTest(t *testing.T) (*DockerClient, *container.InspectResponse) {
 	t.Helper()
 	client := &DockerClient{
-		terminalXHardened:           true,
-		terminalXSandboxImageID:     testTerminalXImageID,
-		terminalXSandboxSnapshotRef: testTerminalXSnapshotRef,
-		filesystem:                  "xfs",
+		terminalXHardened:                         true,
+		terminalXSandboxImageID:                   testTerminalXImageID,
+		terminalXSandboxSnapshotRef:               testTerminalXSnapshotRef,
+		terminalXSupervisorRelaySHA256:            testTerminalXSupervisorRelaySHA256,
+		terminalXAssignmentBootstrapSHA256:        testTerminalXAssignmentBootstrapSHA256,
+		terminalXNodeSHA256:                       testTerminalXNodeSHA256,
+		terminalXDeploymentBindingInstallerSHA256: testTerminalXDeploymentBindingInstallerSHA256,
+		terminalXIsolationProbeSHA256:             testTerminalXIsolationProbeSHA256,
+		terminalXSandboxArtifactDigest:            testTerminalXSandboxArtifactDigest,
+		filesystem:                                "xfs",
 	}
 	host, err := client.terminalXHostConfig(terminalXCreateRequest(), nil, nil)
 	if err != nil {
@@ -65,15 +91,23 @@ func terminalXContainerForTest(t *testing.T) (*DockerClient, *container.InspectR
 			HostConfig: host,
 		},
 		Config: &container.Config{
-			Hostname: "sandbox-1",
+			Hostname: terminalXHardenedHostname,
 			Env: []string{
-				"DAYTONA_SANDBOX_ID=sandbox-1",
+				"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
 				"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
 				"DAYTONA_SANDBOX_USER=" + terminalXSandboxUser,
 			},
 			Entrypoint: []string{terminalXHardenedEntrypoint},
 			Labels: map[string]string{
-				terminalXHardenedProfileLabel: terminalXHardenedProfileVersion,
+				terminalXHardenedProfileLabel:                  terminalXHardenedProfileVersion,
+				terminalXSupervisorRelayDigestLabel:            testTerminalXSupervisorRelaySHA256,
+				terminalXAssignmentBootstrapDigestLabel:        testTerminalXAssignmentBootstrapSHA256,
+				terminalXNodeDigestLabel:                       testTerminalXNodeSHA256,
+				terminalXDeploymentBindingInstallerDigestLabel: testTerminalXDeploymentBindingInstallerSHA256,
+				terminalXIsolationProbeDigestLabel:             testTerminalXIsolationProbeSHA256,
+				terminalXSandboxArtifactDigestLabel:            testTerminalXSandboxArtifactDigest,
+				terminalXSandboxRevisionLabel:                  "1",
+				terminalXSandboxPlanDigestLabel:                testTerminalXSandboxPlanDigest,
 			},
 		},
 		NetworkSettings: &container.NetworkSettings{
@@ -111,6 +145,9 @@ func TestValidateTerminalXCreateRequestRejectsBoundaryWidening(t *testing.T) {
 	domain := "example.com"
 	sandboxClass := "standard"
 	tests := map[string]func(*dto.CreateSandboxDTO){
+		"non uuid identity":   func(v *dto.CreateSandboxDTO) { v.Id = "sandbox-1" },
+		"uppercase identity":  func(v *dto.CreateSandboxDTO) { v.Id = "123E4567-E89B-42D3-A456-426614174000" },
+		"wrong uuid version":  func(v *dto.CreateSandboxDTO) { v.Id = "123e4567-e89b-32d3-a456-426614174000" },
 		"root user":           func(v *dto.CreateSandboxDTO) { v.OsUser = "root" },
 		"gpu":                 func(v *dto.CreateSandboxDTO) { v.GpuQuota = 1 },
 		"volume":              func(v *dto.CreateSandboxDTO) { v.Volumes = []dto.VolumeDTO{{}} },
@@ -130,6 +167,21 @@ func TestValidateTerminalXCreateRequestRejectsBoundaryWidening(t *testing.T) {
 		"excess cpu":          func(v *dto.CreateSandboxDTO) { v.CpuQuota = terminalXSandboxMaxCPU + 1 },
 		"excess memory":       func(v *dto.CreateSandboxDTO) { v.MemoryQuota = terminalXSandboxMaxMemoryGiB + 1 },
 		"excess disk":         func(v *dto.CreateSandboxDTO) { v.StorageQuota = terminalXSandboxMaxDiskGiB + 1 },
+		"missing logical binding": func(v *dto.CreateSandboxDTO) {
+			v.Metadata = nil
+		},
+		"logical binding injection": func(v *dto.CreateSandboxDTO) {
+			v.Metadata["organizationId"] = "organization-1"
+		},
+		"non canonical revision": func(v *dto.CreateSandboxDTO) {
+			v.Metadata[terminalXSandboxRevisionLabel] = "01"
+		},
+		"zero revision": func(v *dto.CreateSandboxDTO) {
+			v.Metadata[terminalXSandboxRevisionLabel] = "0"
+		},
+		"invalid plan digest": func(v *dto.CreateSandboxDTO) {
+			v.Metadata[terminalXSandboxPlanDigestLabel] = strings.Repeat("A", 64)
+		},
 	}
 	for name, mutate := range tests {
 		name, mutate := name, mutate
@@ -178,26 +230,134 @@ func TestTerminalXContainerConfigStripsPlatformEnvironment(t *testing.T) {
 	request.Registry = &dto.RegistryDTO{}
 	request.Entrypoint = []string{terminalXHardenedEntrypoint}
 	client := &DockerClient{
-		terminalXHardened:           true,
-		terminalXSandboxImageID:     testTerminalXImageID,
-		terminalXSandboxSnapshotRef: testTerminalXSnapshotRef,
-		useSnapshotEntrypoint:       true,
+		terminalXHardened:                         true,
+		terminalXSandboxImageID:                   testTerminalXImageID,
+		terminalXSandboxSnapshotRef:               testTerminalXSnapshotRef,
+		terminalXSupervisorRelaySHA256:            testTerminalXSupervisorRelaySHA256,
+		terminalXAssignmentBootstrapSHA256:        testTerminalXAssignmentBootstrapSHA256,
+		terminalXNodeSHA256:                       testTerminalXNodeSHA256,
+		terminalXDeploymentBindingInstallerSHA256: testTerminalXDeploymentBindingInstallerSHA256,
+		terminalXIsolationProbeSHA256:             testTerminalXIsolationProbeSHA256,
+		terminalXSandboxArtifactDigest:            testTerminalXSandboxArtifactDigest,
+		useSnapshotEntrypoint:                     true,
 	}
 	config, err := client.getContainerCreateConfig(request, terminalXImage(), nil)
 	if err != nil {
 		t.Fatalf("hardened container config failed: %v", err)
 	}
-	if !validTerminalXContainerEnvironment(config.Env, request.Id, testTerminalXSnapshotRef) {
+	if config.Hostname != terminalXHardenedHostname ||
+		!validTerminalXContainerEnvironment(config.Env, config.Hostname, testTerminalXSnapshotRef) {
 		t.Fatalf("unexpected hardened environment: %v", config.Env)
+	}
+	providerSandboxID, ok := terminalXProviderSandboxIDFromEnvironment(config.Env, testTerminalXSnapshotRef)
+	if !ok || providerSandboxID != request.Id {
+		t.Fatalf("provider identity was not preserved in the privileged init environment: %q", providerSandboxID)
+	}
+	for label, expected := range map[string]string{
+		terminalXHardenedProfileLabel:                  terminalXHardenedProfileVersion,
+		terminalXSupervisorRelayDigestLabel:            testTerminalXSupervisorRelaySHA256,
+		terminalXAssignmentBootstrapDigestLabel:        testTerminalXAssignmentBootstrapSHA256,
+		terminalXNodeDigestLabel:                       testTerminalXNodeSHA256,
+		terminalXDeploymentBindingInstallerDigestLabel: testTerminalXDeploymentBindingInstallerSHA256,
+		terminalXIsolationProbeDigestLabel:             testTerminalXIsolationProbeSHA256,
+		terminalXSandboxArtifactDigestLabel:            testTerminalXSandboxArtifactDigest,
+		terminalXSandboxRevisionLabel:                  "1",
+		terminalXSandboxPlanDigestLabel:                testTerminalXSandboxPlanDigest,
+	} {
+		if config.Labels[label] != expected {
+			t.Fatalf("hardened container label %s was not pinned", label)
+		}
+	}
+}
+
+func TestTerminalXProviderIdentityEnvironmentRejectsAmbiguity(t *testing.T) {
+	t.Parallel()
+	valid := []string{
+		"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+		"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
+		"DAYTONA_SANDBOX_USER=" + terminalXSandboxUser,
+	}
+	for name, values := range map[string][]string{
+		"missing id": {
+			"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
+			"DAYTONA_SANDBOX_USER=" + terminalXSandboxUser,
+		},
+		"duplicate id": {
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_USER=" + terminalXSandboxUser,
+		},
+		"unknown key": {
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
+			"TOKEN=secret",
+		},
+		"wrong snapshot": {
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_SNAPSHOT=registry.example/other@sha256:" + strings.Repeat("1", 64),
+			"DAYTONA_SANDBOX_USER=" + terminalXSandboxUser,
+		},
+		"wrong user": {
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
+			"DAYTONA_SANDBOX_USER=root",
+		},
+		"malformed": {
+			"DAYTONA_SANDBOX_ID=" + testTerminalXSandboxUUID,
+			"DAYTONA_SANDBOX_SNAPSHOT=" + testTerminalXSnapshotRef,
+			"DAYTONA_SANDBOX_USER",
+		},
+	} {
+		name, values := name, values
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if providerSandboxID, ok := terminalXProviderSandboxIDFromEnvironment(values, testTerminalXSnapshotRef); ok || providerSandboxID != "" {
+				t.Fatal("ambiguous privileged environment was accepted")
+			}
+		})
+	}
+	providerSandboxID, ok := terminalXProviderSandboxIDFromEnvironment(valid, testTerminalXSnapshotRef)
+	if !ok || providerSandboxID != testTerminalXSandboxUUID {
+		t.Fatal("exact privileged environment was rejected")
+	}
+}
+
+func TestTerminalXProvisionalReadinessNeverUsesPublicDaemonTCP(t *testing.T) {
+	t.Parallel()
+	client, inspected := terminalXContainerForTest(t)
+	inspected.State = &container.State{Running: true}
+	if err := client.requireTerminalXProvisionalReady(inspected); err != nil {
+		t.Fatalf("valid provisional container rejected: %v", err)
+	}
+	if _, err := client.waitForDaemonRunning(context.Background(), "203.0.113.1", nil); !errors.Is(err, errTerminalXDaemonIsPrivate) {
+		t.Fatalf("hardened daemon TCP poll was not closed: %v", err)
+	}
+	if _, err := client.GetDaemonVersion(context.Background(), testTerminalXSandboxUUID); !errors.Is(err, errTerminalXDaemonIsPrivate) {
+		t.Fatalf("hardened daemon version route was not closed: %v", err)
+	}
+
+	inspected.State.Running = false
+	if err := client.requireTerminalXProvisionalReady(inspected); err == nil {
+		t.Fatal("stopped provisional container was accepted")
+	}
+	inspected.State.Running = true
+	inspected.Config.Hostname = testTerminalXSandboxUUID
+	if err := client.requireTerminalXProvisionalReady(inspected); err == nil {
+		t.Fatal("drifted provisional container was accepted")
 	}
 }
 
 func TestTerminalXGenericImageMutationPathsAreClosed(t *testing.T) {
 	t.Parallel()
 	client := &DockerClient{
-		terminalXHardened:           true,
-		terminalXSandboxImageID:     testTerminalXImageID,
-		terminalXSandboxSnapshotRef: testTerminalXSnapshotRef,
+		terminalXHardened:                         true,
+		terminalXSandboxImageID:                   testTerminalXImageID,
+		terminalXSandboxSnapshotRef:               testTerminalXSnapshotRef,
+		terminalXSupervisorRelaySHA256:            testTerminalXSupervisorRelaySHA256,
+		terminalXAssignmentBootstrapSHA256:        testTerminalXAssignmentBootstrapSHA256,
+		terminalXNodeSHA256:                       testTerminalXNodeSHA256,
+		terminalXDeploymentBindingInstallerSHA256: testTerminalXDeploymentBindingInstallerSHA256,
+		terminalXIsolationProbeSHA256:             testTerminalXIsolationProbeSHA256,
 	}
 	ctx := context.Background()
 	if _, err := client.PullImage(ctx, "example.invalid/image:latest", nil, nil); err == nil {
@@ -251,6 +411,34 @@ func TestValidateTerminalXImageRequiresExactImmutableArtifact(t *testing.T) {
 	}
 }
 
+func TestValidateTerminalXImageArtifactRequiresBothFixedExecutables(t *testing.T) {
+	t.Parallel()
+	client := &DockerClient{
+		terminalXSandboxImageID:                   testTerminalXImageID,
+		terminalXSupervisorRelaySHA256:            testTerminalXSupervisorRelaySHA256,
+		terminalXAssignmentBootstrapSHA256:        testTerminalXAssignmentBootstrapSHA256,
+		terminalXNodeSHA256:                       testTerminalXNodeSHA256,
+		terminalXDeploymentBindingInstallerSHA256: testTerminalXDeploymentBindingInstallerSHA256,
+		terminalXIsolationProbeSHA256:             testTerminalXIsolationProbeSHA256,
+	}
+	if err := client.validateTerminalXImageArtifact(terminalXImage()); err != nil {
+		t.Fatalf("valid hardened image artifact rejected: %v", err)
+	}
+	for _, label := range []string{
+		terminalXSupervisorRelayDigestLabel,
+		terminalXAssignmentBootstrapDigestLabel,
+		terminalXNodeDigestLabel,
+		terminalXDeploymentBindingInstallerDigestLabel,
+		terminalXIsolationProbeDigestLabel,
+	} {
+		candidate := terminalXImage()
+		delete(candidate.Config.Labels, label)
+		if err := client.validateTerminalXImageArtifact(candidate); err == nil {
+			t.Fatalf("image without %s was accepted", label)
+		}
+	}
+}
+
 func TestTerminalXHostConfigHasNoPrivilegedOrUnboundedPath(t *testing.T) {
 	t.Parallel()
 	client := &DockerClient{terminalXHardened: true, filesystem: "xfs"}
@@ -299,7 +487,25 @@ func TestRequireTerminalXContainerRejectsRuntimeBoundaryDrift(t *testing.T) {
 	}
 	tests := map[string]func(*container.InspectResponse){
 		"wrong image": func(v *container.InspectResponse) { v.Image = "sha256:" + string(make([]byte, 64)) },
-		"host bind":   func(v *container.InspectResponse) { v.HostConfig.Binds = []string{"/host:/sandbox"} },
+		"provider identity hostname": func(v *container.InspectResponse) {
+			v.Config.Hostname = testTerminalXSandboxUUID
+		},
+		"non uuid sandbox identity": func(v *container.InspectResponse) {
+			v.Config.Env[0] = "DAYTONA_SANDBOX_ID=sandbox-1"
+		},
+		"uppercase sandbox identity": func(v *container.InspectResponse) {
+			v.Config.Env[0] = "DAYTONA_SANDBOX_ID=123E4567-E89B-42D3-A456-426614174000"
+		},
+		"relay digest drift": func(v *container.InspectResponse) {
+			delete(v.Config.Labels, terminalXSupervisorRelayDigestLabel)
+		},
+		"bootstrap digest drift": func(v *container.InspectResponse) {
+			delete(v.Config.Labels, terminalXAssignmentBootstrapDigestLabel)
+		},
+		"node digest drift": func(v *container.InspectResponse) {
+			delete(v.Config.Labels, terminalXNodeDigestLabel)
+		},
+		"host bind": func(v *container.InspectResponse) { v.HostConfig.Binds = []string{"/host:/sandbox"} },
 		"device": func(v *container.InspectResponse) {
 			v.HostConfig.Devices = []container.DeviceMapping{{PathOnHost: "/dev/kvm"}}
 		},
@@ -379,58 +585,68 @@ func TestValidateTerminalXRunnerRequirementsFailsClosed(t *testing.T) {
 	t.Parallel()
 	valid := func() terminalXRunnerRequirements {
 		return terminalXRunnerRequirements{
-			imageID:                     testTerminalXImageID,
-			snapshotRef:                 testTerminalXSnapshotRef,
-			useSnapshotEntrypoint:       true,
-			networkEnforcementAvailable: true,
-			storageDriver:               "overlay2",
-			backingFilesystem:           "xfs",
-			securityOptions:             []string{"name=seccomp,profile=builtin"},
-			defaultRuntime:              "runc",
-			cgroupVersion:               "2",
-			expectedDockerServerVersion: "28.5.2",
-			actualDockerServerVersion:   "28.5.2",
-			expectedContainerdCommit:    "containerd-commit",
-			actualContainerdCommit:      "containerd-commit",
-			expectedRuncCommit:          "runc-commit",
-			actualRuncCommit:            "runc-commit",
-			memoryLimitAvailable:        true,
-			swapLimitAvailable:          true,
-			cpuQuotaAvailable:           true,
-			pidsLimitAvailable:          true,
-			oomKillAvailable:            true,
+			imageID:                          testTerminalXImageID,
+			snapshotRef:                      testTerminalXSnapshotRef,
+			useSnapshotEntrypoint:            true,
+			networkEnforcementAvailable:      true,
+			storageDriver:                    "overlay2",
+			backingFilesystem:                "xfs",
+			securityOptions:                  []string{"name=seccomp,profile=builtin"},
+			defaultRuntime:                   "runc",
+			cgroupVersion:                    "2",
+			expectedDockerServerVersion:      "28.5.2",
+			actualDockerServerVersion:        "28.5.2",
+			expectedContainerdCommit:         "containerd-commit",
+			actualContainerdCommit:           "containerd-commit",
+			expectedRuncCommit:               "runc-commit",
+			actualRuncCommit:                 "runc-commit",
+			memoryLimitAvailable:             true,
+			swapLimitAvailable:               true,
+			cpuQuotaAvailable:                true,
+			pidsLimitAvailable:               true,
+			oomKillAvailable:                 true,
+			supervisorRelaySHA256:            testTerminalXSupervisorRelaySHA256,
+			assignmentBootstrapSHA256:        testTerminalXAssignmentBootstrapSHA256,
+			nodeSHA256:                       testTerminalXNodeSHA256,
+			deploymentBindingInstallerSHA256: testTerminalXDeploymentBindingInstallerSHA256,
+			isolationProbeSHA256:             testTerminalXIsolationProbeSHA256,
 		}
 	}
 	if err := validateTerminalXRunnerRequirements(valid()); err != nil {
 		t.Fatalf("valid hardened runner rejected: %v", err)
 	}
 	tests := map[string]func(*terminalXRunnerRequirements){
-		"missing image pin":        func(v *terminalXRunnerRequirements) { v.imageID = "" },
-		"missing snapshot pin":     func(v *terminalXRunnerRequirements) { v.snapshotRef = "" },
-		"limits disabled":          func(v *terminalXRunnerRequirements) { v.resourceLimitsDisabled = true },
-		"entrypoint override":      func(v *terminalXRunnerRequirements) { v.useSnapshotEntrypoint = false },
-		"inter-sandbox network":    func(v *terminalXRunnerRequirements) { v.interSandboxNetworkEnabled = true },
-		"additional network":       func(v *terminalXRunnerRequirements) { v.containerNetwork = "bridge" },
-		"runtime override":         func(v *terminalXRunnerRequirements) { v.containerRuntime = "kata" },
-		"wrong default runtime":    func(v *terminalXRunnerRequirements) { v.defaultRuntime = "nvidia" },
-		"legacy cgroup":            func(v *terminalXRunnerRequirements) { v.cgroupVersion = "1" },
-		"gpu":                      func(v *terminalXRunnerRequirements) { v.gpuEnabled = true },
-		"kvm":                      func(v *terminalXRunnerRequirements) { v.mountKvm = true },
-		"daemon token injection":   func(v *terminalXRunnerRequirements) { v.initializeDaemonTelemetry = true },
-		"missing network enforcer": func(v *terminalXRunnerRequirements) { v.networkEnforcementAvailable = false },
-		"wrong storage driver":     func(v *terminalXRunnerRequirements) { v.storageDriver = "btrfs" },
-		"wrong backing filesystem": func(v *terminalXRunnerRequirements) { v.backingFilesystem = "ext4" },
-		"missing seccomp":          func(v *terminalXRunnerRequirements) { v.securityOptions = nil },
-		"missing docker pin":       func(v *terminalXRunnerRequirements) { v.expectedDockerServerVersion = "" },
-		"docker version drift":     func(v *terminalXRunnerRequirements) { v.actualDockerServerVersion = "28.5.3" },
-		"containerd drift":         func(v *terminalXRunnerRequirements) { v.actualContainerdCommit = "different" },
-		"runc drift":               func(v *terminalXRunnerRequirements) { v.actualRuncCommit = "different" },
-		"missing memory limits":    func(v *terminalXRunnerRequirements) { v.memoryLimitAvailable = false },
-		"missing swap limits":      func(v *terminalXRunnerRequirements) { v.swapLimitAvailable = false },
-		"missing cpu quotas":       func(v *terminalXRunnerRequirements) { v.cpuQuotaAvailable = false },
-		"missing pid limits":       func(v *terminalXRunnerRequirements) { v.pidsLimitAvailable = false },
-		"missing oom enforcement":  func(v *terminalXRunnerRequirements) { v.oomKillAvailable = false },
-		"live restore":             func(v *terminalXRunnerRequirements) { v.liveRestoreEnabled = true },
+		"missing image pin":            func(v *terminalXRunnerRequirements) { v.imageID = "" },
+		"missing snapshot pin":         func(v *terminalXRunnerRequirements) { v.snapshotRef = "" },
+		"limits disabled":              func(v *terminalXRunnerRequirements) { v.resourceLimitsDisabled = true },
+		"entrypoint override":          func(v *terminalXRunnerRequirements) { v.useSnapshotEntrypoint = false },
+		"inter-sandbox network":        func(v *terminalXRunnerRequirements) { v.interSandboxNetworkEnabled = true },
+		"additional network":           func(v *terminalXRunnerRequirements) { v.containerNetwork = "bridge" },
+		"runtime override":             func(v *terminalXRunnerRequirements) { v.containerRuntime = "kata" },
+		"wrong default runtime":        func(v *terminalXRunnerRequirements) { v.defaultRuntime = "nvidia" },
+		"legacy cgroup":                func(v *terminalXRunnerRequirements) { v.cgroupVersion = "1" },
+		"gpu":                          func(v *terminalXRunnerRequirements) { v.gpuEnabled = true },
+		"kvm":                          func(v *terminalXRunnerRequirements) { v.mountKvm = true },
+		"daemon token injection":       func(v *terminalXRunnerRequirements) { v.initializeDaemonTelemetry = true },
+		"missing network enforcer":     func(v *terminalXRunnerRequirements) { v.networkEnforcementAvailable = false },
+		"wrong storage driver":         func(v *terminalXRunnerRequirements) { v.storageDriver = "btrfs" },
+		"wrong backing filesystem":     func(v *terminalXRunnerRequirements) { v.backingFilesystem = "ext4" },
+		"missing seccomp":              func(v *terminalXRunnerRequirements) { v.securityOptions = nil },
+		"missing docker pin":           func(v *terminalXRunnerRequirements) { v.expectedDockerServerVersion = "" },
+		"docker version drift":         func(v *terminalXRunnerRequirements) { v.actualDockerServerVersion = "28.5.3" },
+		"containerd drift":             func(v *terminalXRunnerRequirements) { v.actualContainerdCommit = "different" },
+		"runc drift":                   func(v *terminalXRunnerRequirements) { v.actualRuncCommit = "different" },
+		"missing memory limits":        func(v *terminalXRunnerRequirements) { v.memoryLimitAvailable = false },
+		"missing swap limits":          func(v *terminalXRunnerRequirements) { v.swapLimitAvailable = false },
+		"missing cpu quotas":           func(v *terminalXRunnerRequirements) { v.cpuQuotaAvailable = false },
+		"missing pid limits":           func(v *terminalXRunnerRequirements) { v.pidsLimitAvailable = false },
+		"missing oom enforcement":      func(v *terminalXRunnerRequirements) { v.oomKillAvailable = false },
+		"live restore":                 func(v *terminalXRunnerRequirements) { v.liveRestoreEnabled = true },
+		"missing supervisor relay":     func(v *terminalXRunnerRequirements) { v.supervisorRelaySHA256 = "" },
+		"missing assignment bootstrap": func(v *terminalXRunnerRequirements) { v.assignmentBootstrapSHA256 = "" },
+		"missing node interpreter":     func(v *terminalXRunnerRequirements) { v.nodeSHA256 = "" },
+		"missing binding installer":    func(v *terminalXRunnerRequirements) { v.deploymentBindingInstallerSHA256 = "" },
+		"missing isolation probe":      func(v *terminalXRunnerRequirements) { v.isolationProbeSHA256 = "" },
 	}
 	for name, mutate := range tests {
 		name, mutate := name, mutate

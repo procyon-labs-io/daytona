@@ -28,6 +28,8 @@ import (
 	"github.com/daytonaio/runner/pkg/services"
 	"github.com/daytonaio/runner/pkg/sshgateway"
 	"github.com/daytonaio/runner/pkg/telemetry/filters"
+	"github.com/daytonaio/runner/pkg/terminalxdocker"
+	"github.com/daytonaio/runner/pkg/terminalxlog"
 	"github.com/docker/docker/client"
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-isatty"
@@ -51,6 +53,19 @@ func run() int {
 	cfg, err := config.GetConfig()
 	if err != nil {
 		logger.Error("Failed to get config", "error", err)
+		return 2
+	}
+	if cfg.TerminalXHardened {
+		logger = slog.New(terminalxlog.NewRedactingHandler(
+			logger.Handler(),
+			cfg.ApiToken,
+			cfg.AWSAccessKeyId,
+			cfg.AWSSecretAccessKey,
+		))
+		slog.SetDefault(logger)
+	}
+	if err := cfg.ValidateTerminalXProcessBoundary(); err != nil {
+		logger.Error("TerminalX process boundary validation failed", "error", err)
 		return 2
 	}
 
@@ -102,15 +117,25 @@ func run() int {
 		defer telemetry.ShutdownTracer(logger, tp)
 	}
 
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-		client.WithTraceProvider(otel.GetTracerProvider()),
-	)
-	if err != nil {
+	var cli *client.Client
+	var closeDockerClient func() error
+	if cfg.TerminalXHardened {
+		cli, closeDockerClient, err = terminalxdocker.NewPinnedClient(ctx)
+	} else {
+		cli, err = client.NewClientWithOpts(
+			client.FromEnv,
+			client.WithAPIVersionNegotiation(),
+			client.WithTraceProvider(otel.GetTracerProvider()),
+		)
+		if cli != nil {
+			closeDockerClient = cli.Close
+		}
+	}
+	if err != nil || cli == nil || closeDockerClient == nil {
 		logger.Error("Error creating Docker client", "error", err)
 		return 2
 	}
+	defer func() { _ = closeDockerClient() }()
 
 	// Initialize net rules manager
 	persistent := cfg.Environment != "development"
@@ -145,48 +170,77 @@ func run() int {
 		logger.Error("TerminalX hardened runner does not permit the SSH gateway")
 		return 2
 	}
+	if cfg.TerminalXHardened && (!cfg.EnableTLS || cfg.TLSCertFile == "" || cfg.TLSKeyFile == "") {
+		logger.Error("TerminalX hardened runner requires its authenticated API to use TLS")
+		return 2
+	}
+	if cfg.TerminalXHardened && len([]byte(cfg.ApiToken)) < 32 {
+		logger.Error("TerminalX hardened runner requires a high-entropy API credential")
+		return 2
+	}
 
 	dockerClient, err := docker.NewDockerClient(ctx, docker.DockerClientConfig{
-		ApiClient:                    cli,
-		BackupInfoCache:              backupInfoCache,
-		Logger:                       logger,
-		AWSRegion:                    cfg.AWSRegion,
-		AWSEndpointUrl:               cfg.AWSEndpointUrl,
-		AWSAccessKeyId:               cfg.AWSAccessKeyId,
-		AWSSecretAccessKey:           cfg.AWSSecretAccessKey,
-		DaemonPath:                   daemonPath,
-		ComputerUsePluginPath:        pluginPath,
-		NetRulesManager:              netRulesManager,
-		ResourceLimitsDisabled:       cfg.ResourceLimitsDisabled,
-		DaemonStartTimeoutSec:        cfg.DaemonStartTimeoutSec,
-		SandboxStartTimeoutSec:       cfg.SandboxStartTimeoutSec,
-		AndroidBootTimeoutSec:        cfg.AndroidBootTimeoutSec,
-		UseSnapshotEntrypoint:        cfg.UseSnapshotEntrypoint,
-		VolumeCleanupInterval:        cfg.VolumeCleanupInterval,
-		VolumeCleanupDryRun:          cfg.VolumeCleanupDryRun,
-		VolumeCleanupExclusionPeriod: cfg.VolumeCleanupExclusionPeriod,
-		BackupTimeoutMin:             cfg.BackupTimeoutMin,
-		SnapshotPullTimeout:          cfg.SnapshotPullTimeout,
-		BuildTimeoutMin:              cfg.BuildTimeoutMin,
-		BuildCPUCores:                cfg.BuildCPUCores,
-		BuildMemoryGB:                cfg.BuildMemoryGB,
-		InitializeDaemonTelemetry:    cfg.InitializeDaemonTelemetry,
-		InterSandboxNetworkEnabled:   cfg.InterSandboxNetworkEnabled,
-		GpuEnabled:                   cfg.GpuEnabled,
-		MountKvmToAndroidSandbox:     cfg.MountKvmToAndroidSandbox,
-		ContainerNetwork:             cfg.ContainerNetwork,
-		ContainerRuntime:             cfg.ContainerRuntime,
-		TerminalXHardened:            cfg.TerminalXHardened,
-		TerminalXSandboxImageID:      cfg.TerminalXSandboxImageID,
-		TerminalXSandboxSnapshotRef:  cfg.TerminalXSandboxSnapshotRef,
-		TerminalXDockerServerVersion: cfg.TerminalXDockerServerVersion,
-		TerminalXContainerdCommit:    cfg.TerminalXContainerdCommit,
-		TerminalXRuncCommit:          cfg.TerminalXRuncCommit,
+		ApiClient:                                  cli,
+		BackupInfoCache:                            backupInfoCache,
+		Logger:                                     logger,
+		AWSRegion:                                  cfg.AWSRegion,
+		AWSEndpointUrl:                             cfg.AWSEndpointUrl,
+		AWSAccessKeyId:                             cfg.AWSAccessKeyId,
+		AWSSecretAccessKey:                         cfg.AWSSecretAccessKey,
+		DaemonPath:                                 daemonPath,
+		ComputerUsePluginPath:                      pluginPath,
+		NetRulesManager:                            netRulesManager,
+		ResourceLimitsDisabled:                     cfg.ResourceLimitsDisabled,
+		DaemonStartTimeoutSec:                      cfg.DaemonStartTimeoutSec,
+		SandboxStartTimeoutSec:                     cfg.SandboxStartTimeoutSec,
+		AndroidBootTimeoutSec:                      cfg.AndroidBootTimeoutSec,
+		UseSnapshotEntrypoint:                      cfg.UseSnapshotEntrypoint,
+		VolumeCleanupInterval:                      cfg.VolumeCleanupInterval,
+		VolumeCleanupDryRun:                        cfg.VolumeCleanupDryRun,
+		VolumeCleanupExclusionPeriod:               cfg.VolumeCleanupExclusionPeriod,
+		BackupTimeoutMin:                           cfg.BackupTimeoutMin,
+		SnapshotPullTimeout:                        cfg.SnapshotPullTimeout,
+		BuildTimeoutMin:                            cfg.BuildTimeoutMin,
+		BuildCPUCores:                              cfg.BuildCPUCores,
+		BuildMemoryGB:                              cfg.BuildMemoryGB,
+		InitializeDaemonTelemetry:                  cfg.InitializeDaemonTelemetry,
+		InterSandboxNetworkEnabled:                 cfg.InterSandboxNetworkEnabled,
+		GpuEnabled:                                 cfg.GpuEnabled,
+		MountKvmToAndroidSandbox:                   cfg.MountKvmToAndroidSandbox,
+		ContainerNetwork:                           cfg.ContainerNetwork,
+		ContainerRuntime:                           cfg.ContainerRuntime,
+		TerminalXHardened:                          cfg.TerminalXHardened,
+		TerminalXSandboxImageID:                    cfg.TerminalXSandboxImageID,
+		TerminalXSandboxSnapshotRef:                cfg.TerminalXSandboxSnapshotRef,
+		TerminalXDockerServerVersion:               cfg.TerminalXDockerServerVersion,
+		TerminalXContainerdCommit:                  cfg.TerminalXContainerdCommit,
+		TerminalXRuncCommit:                        cfg.TerminalXRuncCommit,
+		TerminalXSupervisorRelaySHA256:             cfg.TerminalXSupervisorRelaySHA256,
+		TerminalXAssignmentBootstrapSHA256:         cfg.TerminalXAssignmentBootstrapSHA256,
+		TerminalXNodeSHA256:                        cfg.TerminalXNodeSHA256,
+		TerminalXDeploymentBindingInstallerSHA256:  cfg.TerminalXDeploymentBindingInstallerSHA256,
+		TerminalXIsolationProbeSHA256:              cfg.TerminalXIsolationProbeSHA256,
+		TerminalXSandboxArtifactDigest:             cfg.TerminalXSandboxArtifactDigest,
+		TerminalXHardenedSourceCommit:              cfg.TerminalXHardenedSourceCommit,
+		TerminalXSeccompProfileSHA256:              cfg.TerminalXSeccompProfileSHA256,
+		TerminalXBootstrapAuthorityKeyID:           cfg.TerminalXBootstrapAuthorityKeyID,
+		TerminalXBootstrapAuthorityPublicKeyFile:   cfg.TerminalXBootstrapAuthorityPublicKeyFile,
+		TerminalXBootstrapAuthorityPublicKeySHA256: cfg.TerminalXBootstrapAuthorityPublicKeySHA256,
+		TerminalXDeploymentBindingKeyID:            cfg.TerminalXDeploymentBindingKeyID,
+		TerminalXDeploymentBindingPrivateKeyFile:   cfg.TerminalXDeploymentBindingPrivateKeyFile,
+		TerminalXDeploymentBindingPublicKeySHA256:  cfg.TerminalXDeploymentBindingPublicKeySHA256,
+		TerminalXIsolationAttestorKeyID:            cfg.TerminalXIsolationAttestorKeyID,
+		TerminalXIsolationAttestorPrivateKeyFile:   cfg.TerminalXIsolationAttestorPrivateKeyFile,
+		TerminalXIsolationAttestorPublicKeySHA256:  cfg.TerminalXIsolationAttestorPublicKeySHA256,
+		TerminalXEvidenceTTL:                       cfg.TerminalXEvidenceTTL,
+		TerminalXDaytonaDaemonUID:                  cfg.TerminalXDaytonaDaemonUID,
+		TerminalXAgentUID:                          cfg.TerminalXAgentUID,
 	})
 	if err != nil {
 		logger.Error("Error creating Docker client wrapper", "error", err)
 		return 2
 	}
+	defer dockerClient.CloseTerminalXSecrets()
 
 	// Start Docker events monitor
 	monitorOpts := docker.MonitorOptions{
@@ -307,13 +361,14 @@ func run() int {
 	}
 
 	apiServer := api.NewApiServer(api.ApiServerConfig{
-		Logger:      logger,
-		ApiPort:     cfg.ApiPort,
-		ApiToken:    cfg.ApiToken,
-		TLSCertFile: cfg.TLSCertFile,
-		TLSKeyFile:  cfg.TLSKeyFile,
-		EnableTLS:   cfg.EnableTLS,
-		LogRequests: cfg.ApiLogRequests,
+		Logger:            logger,
+		ApiPort:           cfg.ApiPort,
+		ApiToken:          cfg.ApiToken,
+		TLSCertFile:       cfg.TLSCertFile,
+		TLSKeyFile:        cfg.TLSKeyFile,
+		EnableTLS:         cfg.EnableTLS,
+		LogRequests:       cfg.ApiLogRequests,
+		TerminalXHardened: cfg.TerminalXHardened,
 	})
 
 	apiServerErrChan := make(chan error)
