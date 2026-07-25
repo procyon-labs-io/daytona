@@ -3,7 +3,12 @@
 
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+const terminalXTestSourceCommit = "f9b4dfe428d37f3d956acda4403879516aa8d923"
 
 func TestValidateTerminalXProcessBoundaryFailsClosed(t *testing.T) {
 	valid := func() Config {
@@ -62,5 +67,54 @@ func TestValidateTerminalXProcessBoundaryFailsClosed(t *testing.T) {
 	ordinary.DockerTLSVerifyOverride = "1"
 	if err := ordinary.ValidateTerminalXProcessBoundary(); err != nil {
 		t.Fatalf("ordinary Daytona runner behavior changed: %v", err)
+	}
+}
+
+func TestValidateTerminalXRuntimeIdentityUsesEnvironmentOnlyAsAssertion(t *testing.T) {
+	valid := Config{
+		TerminalXHardened:             true,
+		TerminalXExpectedSourceCommit: terminalXTestSourceCommit,
+	}
+	if err := valid.ValidateTerminalXRuntimeIdentity(
+		terminalXTestSourceCommit,
+		strings.Repeat("a", 64),
+	); err != nil {
+		t.Fatalf("matching measured identity rejected: %v", err)
+	}
+	tests := map[string]func(*Config, *string, *string){
+		"missing assertion": func(config *Config, _ *string, _ *string) {
+			config.TerminalXExpectedSourceCommit = ""
+		},
+		"operator-selected commit": func(config *Config, _ *string, _ *string) {
+			config.TerminalXExpectedSourceCommit = strings.Repeat("b", 40)
+		},
+		"uppercase assertion": func(config *Config, _ *string, _ *string) {
+			config.TerminalXExpectedSourceCommit = strings.ToUpper(terminalXTestSourceCommit)
+		},
+		"invalid measured commit": func(_ *Config, commit *string, _ *string) {
+			*commit = terminalXTestSourceCommit[:12]
+		},
+		"unsafe base commit": func(config *Config, commit *string, _ *string) {
+			config.TerminalXExpectedSourceCommit = terminalXDaytonaBaseCommit
+			*commit = terminalXDaytonaBaseCommit
+		},
+		"invalid measured digest": func(_ *Config, _ *string, digest *string) {
+			*digest = strings.Repeat("A", 64)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			commit := terminalXTestSourceCommit
+			digest := strings.Repeat("a", 64)
+			mutate(&candidate, &commit, &digest)
+			if err := candidate.ValidateTerminalXRuntimeIdentity(commit, digest); err == nil {
+				t.Fatal("untrusted runtime identity was accepted")
+			}
+		})
+	}
+	ordinary := Config{TerminalXHardened: false}
+	if err := ordinary.ValidateTerminalXRuntimeIdentity("", ""); err != nil {
+		t.Fatalf("ordinary Daytona runner identity behavior changed: %v", err)
 	}
 }

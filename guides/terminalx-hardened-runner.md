@@ -23,7 +23,8 @@ TERMINALX_NODE_SHA256=<exact-64-hex-executable-digest>
 TERMINALX_DEPLOYMENT_BINDING_INSTALLER_SHA256=<exact-64-hex-executable-digest>
 TERMINALX_ISOLATION_PROBE_SHA256=<exact-64-hex-executable-digest>
 TERMINALX_SANDBOX_ARTIFACT_DIGEST=<exact-64-hex-release-digest>
-TERMINALX_HARDENED_SOURCE_COMMIT=<reviewed-40-hex-descendant-of-b5>
+# Equality assertion only; the runner derives its identity from its own binary.
+TERMINALX_EXPECTED_SOURCE_COMMIT=<exact-clean-40-hex-runner-vcs.revision>
 TERMINALX_SECCOMP_PROFILE_SHA256=<exact-64-hex-profile-digest>
 TERMINALX_BOOTSTRAP_AUTHORITY_KEY_ID=<platform-bootstrap-key-id>
 TERMINALX_BOOTSTRAP_AUTHORITY_PUBLIC_KEY_FILE=/run/terminalx-secrets/bootstrap-authority.pem
@@ -59,6 +60,17 @@ CONTAINER_RUNTIME=
 SSH_GATEWAY_ENABLE=false
 ```
 
+The hardened runner must be built from a clean exact checkout with Go's `-buildvcs=true` and
+`-trimpath` flags. Before initializing Docker, provider clients, or telemetry, it requires one
+lowercase 40-hex `vcs.revision`, `vcs=git`, and `vcs.modified=false` from its embedded Go build
+information. It then opens `/proc/self/exe`, verifies a stable regular-file identity before and
+after reading, rejects a non-executable or group/world-writable artifact, and SHA-256 hashes those
+live executable bytes. `TERMINALX_EXPECTED_SOURCE_COMMIT` is a required equality assertion over
+that measured revision; it cannot select or replace the revision. The former
+`TERMINALX_HARDENED_SOURCE_COMMIT` input is not accepted as identity. Fresh
+signed effective-isolation claims include both the measured source commit and the lowercase
+`runnerBinaryDigest`.
+
 The Docker backing filesystem must be XFS with project-quota support, and Docker must report its
 exact built-in seccomp profile, cgroup v2, `runc` as its default runtime, every required cgroup
 limit, and live-restore disabled. Docker, containerd, and runc must match the exact signed build
@@ -80,6 +92,28 @@ connection rechecks the same socket inode, a root peer, and matching mount, netw
 namespaces. Docker environment overrides, alternate Unix sockets, TCP/SSH endpoints, and rootless
 daemons are rejected before any Docker API request, so local firewall evidence cannot be combined
 with a different execution daemon.
+
+## Runner and daemon release identity
+
+The hardened workflow reproducibly builds the linux/amd64 runner and daemon twice with
+`-buildvcs=true`, rejects a byte mismatch, and makes each binary independently prove the workflow's
+exact `github.sha`. It uploads and signs GitHub build-provenance attestations for both binaries and
+their deterministic manifest. The manifest is UTF-8, one-line JSON with a trailing newline; before
+the newline its exact schema and canonical key order are:
+
+```json
+{"artifacts":{"daemon":{"architecture":"amd64","binaryDigest":"<64-lowercase-hex>","operatingSystem":"linux","sourceCommit":"<40-lowercase-hex>"},"runner":{"architecture":"amd64","binaryDigest":"<64-lowercase-hex>","operatingSystem":"linux","sourceCommit":"<40-lowercase-hex>"}},"kind":"terminalx.daytona-hardened-runtime-artifacts","version":1}
+```
+
+Release consumers must verify the GitHub attestation's repository, workflow, ref, and exact source
+revision, parse only this closed schema, require both `sourceCommit` values to equal the reviewed
+production fork commit, and hash the downloaded binaries themselves. The Sandbox image builder
+must accept the Daytona daemon only from that verified manifest and must set
+`TERMINALX_DAYTONA_DAEMON_SHA256` from `artifacts.daemon.binaryDigest`; an operator-provided daemon
+path plus a separately supplied digest or image label is not release evidence. Runner deployment
+must likewise require `artifacts.runner.binaryDigest` to equal the executable it installs. The
+TerminalX signed deployment manifest should additionally bind the SHA-256 of this entire runtime
+artifact manifest, so release identity remains independently pinned after GitHub artifact download.
 
 The only accepted Sandbox image has all of these properties:
 
@@ -146,6 +180,11 @@ private runner bridge, and prepends at most 256 KiB of fresh canonical Ed25519-s
 evidence. The external caller cannot supply, replace, or omit that evidence. Relay streams inherit
 the authenticated caller's connection lifetime; the probe and other fixed preflight operations
 retain independent short deadlines and bounded per-Sandbox/global admission.
+
+The signed bootstrap isolation object carries `expectedRunnerBinaryDigest`, which must equal the
+digest measured from the live runner before the runner will install the assignment. The in-Sandbox
+supervisor independently compares that bootstrap expectation with the signed evidence claim's
+`runnerBinaryDigest`; matching only at the host control plane is not sufficient readiness proof.
 
 ## Enforced v1 boundary
 

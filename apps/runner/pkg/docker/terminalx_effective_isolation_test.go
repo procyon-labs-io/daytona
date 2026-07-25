@@ -192,7 +192,8 @@ func terminalXEffectiveIsolationFixture(
 		Capabilities: terminalXHostedPlanCapabilities{
 			IsolatedExecution: true,
 		},
-		Incarnation: strings.Repeat("a", 64),
+		EffectEnforcerPolicyDigest: strings.Repeat("e", 64),
+		Incarnation:                strings.Repeat("a", 64),
 		Isolation: terminalXHostedPlanIsolation{
 			IsolationPolicyDigest: strings.Repeat("c", 64),
 			Network: terminalXHostedPlanNetwork{
@@ -221,7 +222,8 @@ func terminalXEffectiveIsolationFixture(
 		Isolation: terminalXBootstrapIsolation{
 			ExpectedAgentUID: terminalXSandboxUserUID, ExpectedContainerdVersion: "2.2.1",
 			ExpectedDaytonaDaemonUID: terminalXSandboxUserUID, ExpectedDockerVersion: "29.1.3",
-			ExpectedProviderRevision: 7, ExpectedSandboxImageID: testTerminalXImageID,
+			ExpectedProviderRevision: 7, ExpectedRunnerBinaryDigest: strings.Repeat("9", 64),
+			ExpectedSandboxImageID:     testTerminalXImageID,
 			ExpectedSandboxSnapshotRef: testTerminalXSnapshotRef, ExpectedSandboxUser: terminalXSandboxUser,
 			ExpectedSeccompProfileDigest: testTerminalXSeccompDigest, ExpectedSupervisorUID: 0,
 			HardenedDaytonaSourceCommit: testTerminalXHardenedCommit, IssuerKeyID: "isolation-key-1",
@@ -245,7 +247,8 @@ func terminalXEffectiveIsolationFixture(
 	client.apiClient = &terminalXEffectiveIsolationAPI{network: terminalXEffectiveIsolationNetwork()}
 	client.useSnapshotEntrypoint = true
 	client.terminalXSandboxArtifactDigest = testTerminalXArtifactDigest
-	client.terminalXHardenedSourceCommit = testTerminalXHardenedCommit
+	client.terminalXRunnerSourceCommit = testTerminalXHardenedCommit
+	client.terminalXRunnerBinaryDigest = strings.Repeat("9", 64)
 	client.terminalXSeccompProfileSHA256 = testTerminalXSeccompDigest
 	client.terminalXIsolationAttestorSigner = signer
 	client.terminalXEvidenceTTL = time.Minute
@@ -282,8 +285,11 @@ func TestTerminalXEffectiveIsolationEvidenceIsCanonicalFreshAndVerifiable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Isolation.IssuerPublicKeySPKIPEM != "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=\n-----END PUBLIC KEY-----\n" ||
-		terminalXRawDigest(evidence) != "3d038d564ea9a9d9dcadecbf0ebb88a38ee4fec47cad5722073bab79828eda47" {
+	if configuration.Plan.EffectEnforcerPolicyDigest != strings.Repeat("e", 64) ||
+		configuration.Isolation.ExpectedRunnerBinaryDigest != strings.Repeat("9", 64) ||
+		configuration.PlanDigest != "bfee8033134be117f8ddc3540ef3ba4171f59e7264fddccc2df535be3f75f90c" ||
+		configuration.Isolation.IssuerPublicKeySPKIPEM != "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=\n-----END PUBLIC KEY-----\n" ||
+		terminalXRawDigest(evidence) != "a633b632712678828611a04c227a2b9fce06e53f5e224733a0e8e67ae770d637" {
 		t.Fatalf(
 			"cross-language effective isolation fixture changed: plan=%s evidence=%s",
 			configuration.PlanDigest,
@@ -308,7 +314,7 @@ func TestTerminalXEffectiveIsolationEvidenceIsCanonicalFreshAndVerifiable(t *tes
 		) ||
 		attestation.Claims.ObservationKeyProvisioningRefDigest != terminalXDomainDigest(
 			terminalXObservationProvisioningDigestDomain, []byte("observation-provisioning-1"),
-		) {
+		) || attestation.Claims.RunnerBinaryDigest != strings.Repeat("9", 64) {
 		t.Fatal("effective isolation claims changed")
 	}
 	claimsBytes, err := marshalTerminalXCanonicalJSON(attestation.Claims)
@@ -316,7 +322,8 @@ func TestTerminalXEffectiveIsolationEvidenceIsCanonicalFreshAndVerifiable(t *tes
 		t.Fatal(err)
 	}
 	expectedClaimsDigest := terminalXDomainDigest(terminalXEffectiveIsolationClaimsDigestDomain, claimsBytes)
-	if attestation.Authority.ClaimsDigest != expectedClaimsDigest {
+	if expectedClaimsDigest != "fee3f256d0025e190d605474fff25b1bb006caf37acd4b4cd11edab6c19c6cd9" ||
+		attestation.Authority.ClaimsDigest != expectedClaimsDigest {
 		t.Fatal("effective isolation claims digest did not verify")
 	}
 	statement := terminalXEffectiveIsolationStatement{
@@ -330,7 +337,8 @@ func TestTerminalXEffectiveIsolationEvidenceIsCanonicalFreshAndVerifiable(t *tes
 		t.Fatal(err)
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(attestation.Authority.Signature)
-	if err != nil || !ed25519.Verify(
+	if attestation.Authority.Signature != "zD-ad24I4385MdeSi4jHx8EVwq8220UazGTqsocNIlY6sFR9Cjv_FrvuoWg9AIJOcWSV6BfTUWJ23lD6-iG1Cg" ||
+		err != nil || !ed25519.Verify(
 		publicKey,
 		append([]byte(terminalXEffectiveIsolationSignatureDomain), statementBytes...),
 		signature,
@@ -361,6 +369,18 @@ func TestTerminalXEffectiveIsolationRejectsNetworkAndProbeDrift(t *testing.T) {
 		t.Fatal("drifted runner network was attested")
 	}
 	client.apiClient.(*terminalXEffectiveIsolationAPI).network = terminalXEffectiveIsolationNetwork()
+	configuration.Isolation.ExpectedRunnerBinaryDigest = strings.Repeat("8", 64)
+	if evidence, err := client.createTerminalXEffectiveIsolationAttestation(t.Context(), inspected, configuration, report); err == nil {
+		zeroTerminalXBytes(evidence)
+		t.Fatal("mismatched bootstrap runner identity was attested")
+	}
+	configuration.Isolation.ExpectedRunnerBinaryDigest = strings.Repeat("9", 64)
+	client.terminalXRunnerBinaryDigest = strings.Repeat("A", 64)
+	if evidence, err := client.createTerminalXEffectiveIsolationAttestation(t.Context(), inspected, configuration, report); err == nil {
+		zeroTerminalXBytes(evidence)
+		t.Fatal("invalid runner executable identity was attested")
+	}
+	client.terminalXRunnerBinaryDigest = strings.Repeat("9", 64)
 	report.Agent.CapEffective = "0000000000000001"
 	if evidence, err := client.createTerminalXEffectiveIsolationAttestation(t.Context(), inspected, configuration, report); err == nil {
 		zeroTerminalXBytes(evidence)
