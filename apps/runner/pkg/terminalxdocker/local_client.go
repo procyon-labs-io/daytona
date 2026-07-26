@@ -133,7 +133,19 @@ func pinnedDialContext(
 	approved socketIdentity,
 ) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network string, address string) (net.Conn, error) {
-		if network != "unix" || address != socketPath {
+		// The moby HTTP transport invokes DialContext with a synthesized target
+		// derived from the pinned unix host (network "tcp", address
+		// "<socketPath>:<port>"); the raw stream dialer uses ("unix", socketPath).
+		// Both denote the single pinned socket configured on this client. Accept
+		// either spelling that maps to socketPath and reject anything else. The
+		// connection below is always dialed to the freshly re-inspected pinned
+		// socketPath and validatePeer re-confirms RemoteAddr==socketPath, so the
+		// dialed identity never depends on these transport-supplied arguments.
+		target := address
+		if host, _, splitErr := net.SplitHostPort(address); splitErr == nil {
+			target = host
+		}
+		if target != socketPath {
 			return nil, errors.New("TerminalX Docker dial target is not the pinned Unix socket")
 		}
 		before, err := inspectSocket(socketPath, expectedUID, requireProtectedParents)
