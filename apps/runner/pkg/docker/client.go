@@ -206,7 +206,13 @@ func NewDockerClient(ctx context.Context, config DockerClientConfig) (*DockerCli
 			swapLimitAvailable:               info.SwapLimit,
 			cpuQuotaAvailable:                info.CPUCfsPeriod && info.CPUCfsQuota,
 			pidsLimitAvailable:               info.PidsLimit,
-			oomKillAvailable:                 info.OomKillDisable,
+			// cgroup v2 (required above) always enforces per-cgroup OOM killing and
+			// removes the ability to disable it, so info.OomKillDisable is always
+			// false there. The sandbox host config still pins OomKillDisable=false
+			// (see terminalx_hardening.go) and rejects any attempt to disable it.
+			// OOM enforcement is therefore present whenever the OOM killer cannot be
+			// disabled (cgroup v2) or the kernel exposes the toggle (cgroup v1).
+			oomKillAvailable:                 info.OomKillDisable || info.CgroupVersion == "2",
 			liveRestoreEnabled:               info.LiveRestoreEnabled,
 			supervisorRelaySHA256:            config.TerminalXSupervisorRelaySHA256,
 			assignmentBootstrapSHA256:        config.TerminalXAssignmentBootstrapSHA256,
