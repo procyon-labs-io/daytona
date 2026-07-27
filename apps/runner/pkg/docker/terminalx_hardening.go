@@ -363,6 +363,7 @@ func (d *DockerClient) terminalXHostConfig(sandboxDto dto.CreateSandboxDTO, volu
 	initProcess := true
 	return &container.HostConfig{
 		Privileged:   false,
+		NetworkMode:  container.NetworkMode(RUNNER_BRIDGE_NETWORK_NAME),
 		CapDrop:      strslice.StrSlice{"ALL"},
 		IpcMode:      container.IPCModePrivate,
 		CgroupnsMode: container.CgroupnsModePrivate,
@@ -443,7 +444,7 @@ func (d *DockerClient) requireTerminalXContainer(containerInfo *container.Inspec
 		(host.RestartPolicy.Name != "" && host.RestartPolicy.Name != "no") || host.PidMode != "" ||
 		host.IpcMode != container.IPCModePrivate || host.UTSMode != "" ||
 		host.CgroupnsMode != container.CgroupnsModePrivate ||
-		(host.NetworkMode != "" && host.NetworkMode != "default") ||
+		host.NetworkMode != container.NetworkMode(RUNNER_BRIDGE_NETWORK_NAME) ||
 		(host.Runtime != "" && host.Runtime != "runc") ||
 		host.Init == nil || !*host.Init || host.LogConfig.Type != "none" || len(host.LogConfig.Config) != 0 ||
 		host.ShmSize != terminalXSandboxShmSize || !slices.Equal(host.MaskedPaths, terminalXMaskedPaths) ||
