@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -480,13 +479,6 @@ func (d *DockerClient) requireTerminalXContainer(containerInfo *container.Inspec
 }
 
 func terminalXFiniteResourcesMatch(host *container.HostConfig) bool {
-	{
-		sw := "nil"; if host.MemorySwappiness != nil { sw = fmt.Sprintf("%d", *host.MemorySwappiness) }
-		ok := "nil"; if host.OomKillDisable != nil { ok = fmt.Sprintf("%v", *host.OomKillDisable) }
-		pl := "nil"; if host.PidsLimit != nil { pl = fmt.Sprintf("%d", *host.PidsLimit) }
-		fmt.Fprintf(os.Stderr, "[plim] period=%d quota=%d mem=%d swap=%d swpns=%s oom=%s pids=%s cpuset=%q memres=%d kmem=%d kmemtcp=%d storage=%v shares=%d nano=%d count=%d pct=%d blkio=%d rtp=%d rtr=%d cgparent=%q\n",
-			host.CPUPeriod, host.CPUQuota, host.Memory, host.MemorySwap, sw, ok, pl, host.CpusetCpus, host.MemoryReservation, host.KernelMemory, host.KernelMemoryTCP, host.StorageOpt, host.CPUShares, host.NanoCPUs, host.CPUCount, host.CPUPercent, host.BlkioWeight, host.CPURealtimePeriod, host.CPURealtimeRuntime, host.CgroupParent)
-	}
 	if host.PidsLimit == nil || *host.PidsLimit != terminalXSandboxPidsLimit ||
 		host.CPUShares != 0 || host.NanoCPUs != 0 || host.CgroupParent != "" ||
 		host.BlkioWeight != 0 || len(host.BlkioWeightDevice) != 0 ||
@@ -500,7 +492,7 @@ func terminalXFiniteResourcesMatch(host *container.HostConfig) bool {
 		host.Memory%commonGBToBytes(1) != 0 || host.MemorySwap != host.Memory ||
 		host.KernelMemory != 0 || host.KernelMemoryTCP != 0 || host.MemoryReservation != 0 ||
 		(host.MemorySwappiness != nil && *host.MemorySwappiness != 0) ||
-		host.OomKillDisable == nil || *host.OomKillDisable || host.CPUCount != 0 ||
+		(host.OomKillDisable != nil && *host.OomKillDisable) || host.CPUCount != 0 ||
 		host.CPUPercent != 0 || host.IOMaximumIOps != 0 || host.IOMaximumBandwidth != 0 ||
 		len(host.StorageOpt) != 1 {
 		return false
