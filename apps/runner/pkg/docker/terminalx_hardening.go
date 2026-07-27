@@ -486,7 +486,7 @@ func terminalXFiniteResourcesMatch(host *container.HostConfig) bool {
 		host.Memory < commonGBToBytes(1) || host.Memory > commonGBToBytes(terminalXSandboxMaxMemoryGiB) ||
 		host.Memory%commonGBToBytes(1) != 0 || host.MemorySwap != host.Memory ||
 		host.KernelMemory != 0 || host.KernelMemoryTCP != 0 || host.MemoryReservation != 0 ||
-		host.MemorySwappiness == nil || *host.MemorySwappiness != 0 ||
+		(host.MemorySwappiness != nil && *host.MemorySwappiness != 0) ||
 		host.OomKillDisable == nil || *host.OomKillDisable || host.CPUCount != 0 ||
 		host.CPUPercent != 0 || host.IOMaximumIOps != 0 || host.IOMaximumBandwidth != 0 ||
 		len(host.StorageOpt) != 1 {
