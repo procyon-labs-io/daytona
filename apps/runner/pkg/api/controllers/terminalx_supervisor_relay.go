@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"io"
 	"net/http"
 	"strings"
 
@@ -57,7 +56,25 @@ func TerminalXSupervisorRelay(ctx *gin.Context) {
 	ctx.Header("Cache-Control", "no-store")
 	ctx.Header("X-Content-Type-Options", "nosniff")
 	ctx.Status(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, stream); err != nil && !ctx.Writer.Written() {
-		ctx.Error(err)
+	// Flush every framed chunk so a long-lived streaming exchange (terminal.open
+	// PTY) delivers frames immediately. A plain io.Copy leaves small frames in
+	// the net/http buffer until it fills or the handler returns, which never
+	// happens for a live PTY, so the client would hang waiting for the first
+	// frame. Unary exchanges (e.g. isolation.attest) are unaffected.
+	flusher, _ := ctx.Writer.(http.Flusher)
+	buffer := make([]byte, 32*1024)
+	for {
+		read, readErr := stream.Read(buffer)
+		if read > 0 {
+			if _, writeErr := ctx.Writer.Write(buffer[:read]); writeErr != nil {
+				break
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
 	}
 }
