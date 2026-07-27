@@ -322,7 +322,11 @@ func (d *DockerClient) getContainerNetworkingConfig(sandboxDto dto.CreateSandbox
 				EndpointsConfig: map[string]*network.EndpointSettings{},
 			}
 		}
-		networkingConfig.EndpointsConfig[RUNNER_BRIDGE_NETWORK_NAME] = &network.EndpointSettings{}
+		terminalXEndpoint := &network.EndpointSettings{}
+		if d.terminalXHardened {
+			terminalXEndpoint.IPAMConfig = &network.EndpointIPAMConfig{IPv4Address: terminalXSandboxIPv4(sandboxDto.Id)}
+		}
+		networkingConfig.EndpointsConfig[RUNNER_BRIDGE_NETWORK_NAME] = terminalXEndpoint
 	}
 
 	return networkingConfig

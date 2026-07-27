@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -466,7 +467,11 @@ func (d *DockerClient) requireTerminalXContainer(containerInfo *container.Inspec
 	if endpoint == nil {
 		return fmt.Errorf("terminalx hardened sandbox network attachment does not match")
 	}
-	address, err := netip.ParseAddr(endpoint.IPAddress)
+	endpointIP := endpoint.IPAddress
+	if endpointIP == "" && endpoint.IPAMConfig != nil {
+		endpointIP = endpoint.IPAMConfig.IPv4Address
+	}
+	address, err := netip.ParseAddr(endpointIP)
 	if err != nil || !netip.MustParsePrefix("172.20.0.0/16").Contains(address) {
 		return fmt.Errorf("terminalx hardened sandbox network address does not match")
 	}
@@ -585,6 +590,11 @@ func containsFold(values []string, expected string) bool {
 // enforceTerminalXNetworkPolicy installs and assigns the DROP chain before
 // ContainerStart.  This avoids the historical post-start window in which a
 // Sandbox process could reach the network before asynchronous iptables work.
+func terminalXSandboxIPv4(sandboxID string) string {
+	sum := sha256.Sum256([]byte("terminalx/sandbox-ipv4/v1\x00" + sandboxID))
+	return fmt.Sprintf("172.20.%d.%d", int(sum[0]), 2+int(sum[1])%252)
+}
+
 func (d *DockerClient) enforceTerminalXNetworkPolicy(ctx context.Context, containerInfo *container.InspectResponse) error {
 	if err := d.requireTerminalXContainer(containerInfo); err != nil {
 		return err
@@ -593,6 +603,11 @@ func (d *DockerClient) enforceTerminalXNetworkPolicy(ctx context.Context, contai
 		return fmt.Errorf("terminalx hardened sandbox identity is invalid")
 	}
 	ip := GetContainerIpAddress(ctx, containerInfo)
+	if ip == "" {
+		if ep := containerInfo.NetworkSettings.Networks[RUNNER_BRIDGE_NETWORK_NAME]; ep != nil && ep.IPAMConfig != nil {
+			ip = ep.IPAMConfig.IPv4Address
+		}
+	}
 	if ip == "" {
 		return fmt.Errorf("terminalx hardened sandbox network identity is unavailable")
 	}
