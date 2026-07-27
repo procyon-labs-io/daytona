@@ -715,7 +715,10 @@ func validateTerminalXIsolationProbeReport(report *terminalXIsolationProbeReport
 		actual := report.RootPrivatePaths[index]
 		validLinks := actual.NLink == 1
 		if expected.typeName == "directory" {
-			validLinks = actual.NLink >= 2 && actual.NLink <= int64(terminalXJavaScriptMaximumSafeInteger)
+			// overlayfs (dind sandbox rootfs) reports nlink=1 for image-baked
+			// directories; nlink is not a security property, so accept >=1 while
+			// keeping the path/type/mode/uid/gid checks strict.
+			validLinks = actual.NLink >= 1 && actual.NLink <= int64(terminalXJavaScriptMaximumSafeInteger)
 		}
 		if actual.Path != expected.path || actual.Type != expected.typeName || actual.Mode != expected.mode ||
 			actual.UID != 0 || actual.GID != 0 || !validLinks {
