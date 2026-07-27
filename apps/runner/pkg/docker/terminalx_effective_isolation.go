@@ -578,8 +578,15 @@ func (d *DockerClient) runTerminalXIsolationProbe(
 
 func terminalXIsolationProbeExecOptions() container.ExecOptions {
 	return container.ExecOptions{
-		User:         "0:0",
-		Privileged:   false,
+		User: "0:0",
+		// The isolation probe must readlink /proc/<pid>/exe of the
+		// priv-dropped daytona daemon and agent (uid 10001). Reading the exe
+		// link of a different-uid process is gated by CAP_SYS_PTRACE, which
+		// the hardened sandbox cap set (0xe1) deliberately excludes. The
+		// probe is a hash-pinned, measured, ephemeral attestor, so it runs
+		// the exec privileged to obtain CAP_SYS_PTRACE; the sandbox
+		// container's own capability set is unchanged (agents stay 0xe1).
+		Privileged:   true,
 		Tty:          false,
 		AttachStdin:  false,
 		AttachStderr: true,
